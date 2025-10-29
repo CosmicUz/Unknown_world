@@ -31,6 +31,9 @@ class GameState(Enum):
     PLAY_MENU = 5
     LOAD_MENU = 6
     LOADING = 7
+    MULTIPLAYER_MENU = 8
+    CREATE_MULTIPLAYER_MENU = 9
+    JOIN_MULTIPLAYER_MENU = 10
 
 
 class GameMode(Enum):

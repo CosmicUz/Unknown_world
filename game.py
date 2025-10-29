@@ -2,7 +2,7 @@ import os
 import random
 import sys
 import threading
-
+import re
 import pygame
 
 from loading import LoadingScreen
@@ -11,6 +11,9 @@ from Moduls.default.save_load import save_game, delete_save, list_saved_games, l
     save_last_session, AUTOSAVE_PATH
 from Moduls.default.world import World
 from Moduls.default.zombie import Zombie, ZombieType, ALL_ZOMBIE_TYPES
+from network import HostServer, Client, get_local_ip
+from session import Session
+
 
 pygame.init()
 
@@ -57,6 +60,13 @@ class Game:
         self.menu_mode_select = None
         self.menu_bg_green = False
         self.state = GameState.MAIN_MENU
+        self.host_ip = get_local_ip()
+        self.create_slots = [
+            {'type': 'player', 'id': 1, 'name': 'Host (P1)', 'pos_x': 0, 'pos_y': 0},
+            None, None, None
+        ]
+        self.join_ip_input = ""
+        self.join_ip_active = False
         self.mode = GameMode.Offline
         self.players = []
         self.selected_slots = [{'type': 'player', 'id': 1, 'name': 'Player 1', 'pos_x': 0, 'pos_y': 0}]
@@ -92,6 +102,11 @@ class Game:
         self.pause_bg_green = False
         self.selected_modul = "default"
         self.logic = None
+        self.host_server = None
+        self.client = None
+        self.session = Session()
+        self.is_host = False
+        self.is_client = False
 
     def handle_events(self):
         for event in pygame.event.get():
@@ -143,6 +158,17 @@ class Game:
                             self.load_input_text = getattr(self, "load_input_text", "") + event.unicode
                 elif event.type == pygame.KEYUP and event.key == pygame.K_ESCAPE:
                     self.load_input_active = False
+            if self.state == GameState.JOIN_MULTIPLAYER_MENU:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_RETURN:
+                        self.join_ip_active = False
+                    elif event.key == pygame.K_BACKSPACE:
+                        self.join_ip_input = self.join_ip_input[:-1]
+                    else:
+                        if len(self.join_ip_input) < 20 and event.unicode.isdigit() or event.unicode == ".":
+                            self.join_ip_input += event.unicode
+                elif event.type == pygame.KEYUP and event.key == pygame.K_ESCAPE:
+                    self.join_ip_active = False
             elif self.load_menu_active:
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     if hasattr(self, "load_menu_btns") and self.load_menu_btns.get("input") and self.load_menu_btns["input"].collidepoint(event.pos):
@@ -224,6 +250,7 @@ class Game:
             # Mouse eventlari
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
+                    print(f"[DEBUG] MouseButtonDOWN at {event.pos}")
                     self.handle_mouse_click(event.pos)
         return True
     
@@ -460,6 +487,9 @@ class Game:
                     power_up.active = False
                     self.world.power_ups.remove(power_up)
     def handle_mouse_click(self, pos):
+        print(f"[DEBUG] Mouse clicked at: {pos}, state: {self.state}")
+        if self.state == GameState.JOIN_MULTIPLAYER_MENU:
+            self.handle_join_multiplayer_mouse_click(pos)
         if self.state == GameState.MAIN_MENU:
             center_x = self.screen_width // 2
             button_width = 260
@@ -474,7 +504,7 @@ class Game:
                 self.state = GameState.PLAY_MENU
                 self.menu_bg_color = (70, 160, 230)
             elif multi_rect.collidepoint(mx, my):
-                pass  
+                self.state = GameState.MULTIPLAYER_MENU
             elif exit_rect.collidepoint(mx, my):
                 pygame.quit()
                 sys.exit()
@@ -486,6 +516,32 @@ class Game:
             self.handle_pause_click(pos)
         elif self.state == GameState.GAME_OVER:
             self.handle_game_over_click(pos)
+        elif self.state == GameState.MULTIPLAYER_MENU:
+            self.handle_multiplayer_menu_click(pos)
+        elif self.state == GameState.CREATE_MULTIPLAYER_MENU:
+            self.handle_create_multiplayer_menu_click(pos)
+        elif self.state == GameState.JOIN_MULTIPLAYER_MENU:
+            self.handle_join_multiplayer_menu_click(pos)
+
+    def handle_join_multiplayer_mouse_click(self, pos):
+        center_x = self.screen_width // 2
+        btn_width = 180
+        btn_height = 50
+        input_y = 240
+        join_btn_rect = pygame.Rect(center_x - btn_width // 2, input_y + 80, btn_width, btn_height)
+        back_btn_rect = pygame.Rect(center_x - btn_width // 2, input_y + 150, btn_width, btn_height)
+
+        mx, my = pos
+        print(f"[DEBUG] Mouse click for JOIN_MULTIPLAYER_MENU: mx={mx}, my={my}")
+        print(f"[DEBUG] Join btn rect: {join_btn_rect}, Back btn rect: {back_btn_rect}")
+        if join_btn_rect.collidepoint(mx, my):
+            print("[DEBUG] Mouse JOIN button detected, calling join logic.")
+            self.handle_join_multiplayer_menu_click(pos)
+        elif back_btn_rect.collidepoint(mx, my):
+            print("[DEBUG] Mouse BACK button detected, calling back logic.")
+            self.handle_join_multiplayer_menu_click(pos)
+        else:
+            print("[DEBUG] Mouse click did not hit JOIN or BACK button.")
 
     def handle_play_menu_click(self, pos):
         if self.add_menu_active:
@@ -539,6 +595,144 @@ class Game:
         elif self.play_menu_buttons['back'].collidepoint(pos):
             self.state = GameState.MAIN_MENU
             self.menu_bg_color = (45, 80, 22)
+
+    def handle_multiplayer_menu_click(self, pos):
+        center_x = self.screen_width // 2
+        button_width = 220
+        button_height = 70
+        gap = 38
+        start_y = 230
+        create_rect = pygame.Rect(center_x - button_width // 2, start_y, button_width, button_height)
+        join_rect = pygame.Rect(center_x - button_width // 2, start_y + button_height + gap, button_width,
+                                button_height)
+        back_rect = pygame.Rect(center_x - button_width // 2, start_y + 2 * (button_height + gap), button_width,
+                                button_height)
+
+        mx, my = pos
+        if create_rect.collidepoint(mx, my):
+            print("[MULTIPLAYER] Create bosildi (keyingi bosqichda server ochiladi)")
+            self.state = GameState.CREATE_MULTIPLAYER_MENU
+
+        elif join_rect.collidepoint(mx, my):
+            print("[MULTIPLAYER] Join bosildi (keyingi bosqichda serverga ulaniladi)")
+            self.state = GameState.JOIN_MULTIPLAYER_MENU
+
+        elif back_rect.collidepoint(mx, my):
+            self.state = GameState.MAIN_MENU
+
+    def handle_create_multiplayer_menu_click(self, pos):
+        center_x = self.screen_width // 2
+        slot_width = 180
+        slot_height = 60
+        slot_gap = 30
+        slot_start_y = 220
+
+        slots = self.session.get_state()
+        for i, slot in enumerate(slots):
+            slot_rect = pygame.Rect(center_x - slot_width // 2, slot_start_y + i * (slot_height + slot_gap), slot_width,
+                                    slot_height)
+            if slot:
+                color = (24, 134, 42) if slot["role"] == "host" else (200, 220, 240)
+                pygame.draw.rect(self.screen, color, slot_rect, border_radius=12)
+                slot_text = self.small_font.render(slot['name'], True, WHITE)
+                self.screen.blit(slot_text, slot_text.get_rect(center=slot_rect.center))
+            else:
+                pygame.draw.rect(self.screen, (180, 180, 180), slot_rect, border_radius=12)
+                slot_text = self.small_font.render("Empty", True, (60, 60, 60))
+                self.screen.blit(slot_text, slot_text.get_rect(center=slot_rect.center))
+
+        create_btn_width = 180
+        create_btn_height = 50
+        create_btn_y = slot_start_y + 4 * (slot_height + slot_gap) + 40
+
+        # Tugmalar
+        create_game_rect = pygame.Rect(center_x - create_btn_width - 30, create_btn_y, create_btn_width,
+                                       create_btn_height)
+        back_rect = pygame.Rect(center_x + 30, create_btn_y, create_btn_width, create_btn_height)
+
+        mx, my = pos
+        if create_game_rect.collidepoint(mx, my):
+            if self.session.num_clients() == 0:
+                print("[MULTIPLAYER] At least one client must join before starting!")
+                return
+            print("[MULTIPLAYER] Host starting server...")
+            self.is_host = True
+            if not self.host_server:
+                self.host_server = HostServer(port=7777)
+                self.host_server.start()
+                print("[MULTIPLAYER] HostServer started.")
+            self.host_server.broadcast_state()
+            self.state = GameState.PLAYING
+            # Slotlar bo'yicha players ro'yxatini to'ldirish
+            self.players = []
+            for slot in self.session.slots:
+                if slot:
+                    self.players.append(slot)
+
+        elif back_rect.collidepoint(mx, my):
+            print("[MULTIPLAYER] Multiplayer menyuga qaytildi.")
+            if self.host_server:
+                self.host_server.stop()
+                self.host_server = None
+            self.is_host = False
+            self.state = GameState.MULTIPLAYER_MENU
+
+    def handle_join_multiplayer_menu_click(self, pos):
+        center_x = self.screen_width // 2
+        btn_width = 180
+        btn_height = 50
+        input_y = 240
+        join_btn_rect = pygame.Rect(center_x - btn_width // 2, input_y + 80, btn_width, btn_height)
+        back_btn_rect = pygame.Rect(center_x - btn_width // 2, input_y + 150, btn_width, btn_height)
+
+        mx, my = pos
+        if join_btn_rect.collidepoint(mx, my):
+            ip = self.join_ip_input.strip()
+            print(f"[DEBUG] Join tugmasi bosildi. IP kiritilgan: '{ip}'")
+            ip_pattern = r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"
+            if not ip:
+                print("[ERROR] IP kiritilmadi!")
+                return
+            if not re.match(ip_pattern, ip):
+                print(f"[ERROR] IP format noto'g'ri: {ip}")
+                return
+            print("[INFO] IP format to'g'ri. Client ulanish boshlanadi.")
+            self.is_client = True
+            client_name = f"P{self.session.num_clients() + 2}"
+            print(f"[DEBUG] Client name: {client_name}")
+            self.client = Client(ip, port=7777, name=client_name)
+            try:
+                self.client.connect()
+            except Exception as e:
+                print(f"[ERROR] Client.connect() exception: {e}")
+            print(f"[DEBUG] Client is_connected: {self.client.is_connected}")
+            print(f"[DEBUG] Client slot_idx: {self.client.slot_idx}")
+            print(f"[DEBUG] Clientdan olingan slotlar: {self.client.last_slots}")
+            if self.client.is_connected and self.client.last_slots:
+                print("[INFO] Client session slotlari networkdan yangilanmoqda.")
+                self.session.update_from_network(self.client.last_slots)
+            else:
+                print("[WARN] Client slotlari networkdan olinmadi. Local add_client ishlatiladi.")
+                slot_idx = self.session.add_client(self.client.name)
+                print(f"[DEBUG] Local add_client slot_idx: {slot_idx}")
+            print("[INFO] Multiplayer menyuga o'tildi (CREATE_MULTIPLAYER_MENU).")
+            self.state = GameState.CREATE_MULTIPLAYER_MENU
+            self.players = self.session.get_state()
+        elif back_btn_rect.collidepoint(mx, my):
+            print("[INFO] Back tugmasi bosildi. Join menyusidan chiqildi.")
+            if self.client:
+                self.client.disconnect()
+                self.client = None
+            self.is_client = False
+            self.state = GameState.MULTIPLAYER_MENU
+
+        elif back_btn_rect.collidepoint(mx, my):
+            print("[INFO] Back tugmasi bosildi. Join menyusidan chiqildi.")
+            if self.client:
+                self.client.disconnect()
+                self.client = None
+            self.is_client = False
+            self.state = GameState.MULTIPLAYER_MENU
 
     def handle_load_menu_click(self, pos):
         for save_name, slot_rect in self.load_menu_slots_rects:
@@ -636,13 +830,13 @@ class Game:
             if self.load_menu_page_btns["up"].collidepoint(pos):
                 if self.load_menu_page > 0:
                     self.load_menu_page -= 1
-                    self.selected_save = None  # PATCH: page o‘zgarganda tanlangan faylni tozalash
+                    self.selected_save = None
                 return
             if self.load_menu_page_btns["down"].collidepoint(pos):
                 page_count = max(1, (len(self.filtered_saves) + 4) // 5)
                 if self.load_menu_page < page_count - 1:
                     self.load_menu_page += 1
-                    self.selected_save = None  # PATCH: page o‘zgarganda tanlangan faylni tozalash
+                    self.selected_save = None
                 return
   
     def check_game_over(self):
@@ -839,7 +1033,13 @@ class Game:
         elif self.state == GameState.LOADING:
             print(f"Game state: {self.state}")
             self.render_loading()
-
+        elif self.state == GameState.MULTIPLAYER_MENU:
+            print(f"Game state: {self.state}")
+            self.render_multiplayer_menu()
+        elif self.state == GameState.CREATE_MULTIPLAYER_MENU:
+            self.render_create_multiplayer_menu()
+        elif self.state == GameState.JOIN_MULTIPLAYER_MENU:
+            self.render_join_multiplayer_menu()
 
 
     def render_main_menu(self):
@@ -880,10 +1080,123 @@ class Game:
                 self.state = GameState.PLAY_MENU
                 self.menu_bg_color = (70, 160, 230) 
             elif multi_rect.collidepoint(mx, my):
-                pass
+                self.state = GameState.MULTIPLAYER_MENU
             elif exit_rect.collidepoint(mx, my):
                 pygame.quit()
-                sys.exit()  
+                sys.exit()
+
+    def render_multiplayer_menu(self):
+        self.screen.fill((70, 160, 230))
+        center_x = self.screen_width // 2
+        button_width = 220
+        button_height = 70
+        gap = 38
+        start_y = 230
+
+        # Title
+        title = self.font.render("Multiplayer", True, WHITE)
+        title_rect = title.get_rect(center=(center_x, 140))
+        self.screen.blit(title, title_rect)
+
+        # CREATE tugmasi
+        create_rect = pygame.Rect(center_x - button_width // 2, start_y, button_width, button_height)
+        pygame.draw.rect(self.screen, (24, 134, 42), create_rect, border_radius=18)
+        create_text = self.font.render("Create", True, WHITE)
+        self.screen.blit(create_text, create_text.get_rect(center=create_rect.center))
+
+        # JOIN tugmasi
+        join_rect = pygame.Rect(center_x - button_width // 2, start_y + button_height + gap, button_width,
+                                button_height)
+        pygame.draw.rect(self.screen, (70, 100, 200), join_rect, border_radius=18)
+        join_text = self.font.render("Join", True, WHITE)
+        self.screen.blit(join_text, join_text.get_rect(center=join_rect.center))
+
+        # BACK tugmasi
+        back_rect = pygame.Rect(center_x - button_width // 2, start_y + 2 * (button_height + gap), button_width,
+                                button_height)
+        pygame.draw.rect(self.screen, (200, 100, 100), back_rect, border_radius=18)
+        back_text = self.font.render("Back", True, WHITE)
+        self.screen.blit(back_text, back_text.get_rect(center=back_rect.center))
+
+    def render_create_multiplayer_menu(self):
+        self.screen.fill((70, 160, 230))
+        center_x = self.screen_width // 2
+        slot_width = 180
+        slot_height = 60
+        slot_gap = 30
+        slot_start_y = 220
+        # IP manzili (host)
+        ip_text = self.small_font.render(f"Your IP: {self.host_ip}", True, WHITE)
+        self.screen.blit(ip_text, (center_x - 140, 100))
+        # Slotlar
+        for i in range(4):
+            slot_rect = pygame.Rect(center_x - slot_width // 2, slot_start_y + i * (slot_height + slot_gap), slot_width,
+                                    slot_height)
+            if i == 0:
+                slot = self.create_slots[0]
+                color = (24, 134, 42)
+                pygame.draw.rect(self.screen, color, slot_rect, border_radius=12)
+                slot_text = self.small_font.render("Host (P1)", True, WHITE)
+                self.screen.blit(slot_text, slot_text.get_rect(center=slot_rect.center))
+            elif self.create_slots[i] is not None:
+                slot = self.create_slots[i]
+                color = (200, 220, 240)
+                pygame.draw.rect(self.screen, color, slot_rect, border_radius=12)
+                slot_text = self.small_font.render(slot['name'], True, WHITE)
+                self.screen.blit(slot_text, slot_text.get_rect(center=slot_rect.center))
+            else:
+                pygame.draw.rect(self.screen, (180, 180, 180), slot_rect, border_radius=12)
+                slot_text = self.small_font.render("Empty", True, (60, 60, 60))
+                self.screen.blit(slot_text, slot_text.get_rect(center=slot_rect.center))
+        # Tugmalar
+        create_btn_width = 180
+        create_btn_height = 50
+        create_btn_y = slot_start_y + 4 * (slot_height + slot_gap) + 40
+        create_game_rect = pygame.Rect(center_x - create_btn_width - 30, create_btn_y, create_btn_width,
+                                       create_btn_height)
+        back_rect = pygame.Rect(center_x + 30, create_btn_y, create_btn_width, create_btn_height)
+        pygame.draw.rect(self.screen, (24, 134, 42), create_game_rect, border_radius=12)
+        create_text = self.small_font.render("Create Game", True, WHITE)
+        self.screen.blit(create_text, create_text.get_rect(center=create_game_rect.center))
+        pygame.draw.rect(self.screen, (200, 100, 100), back_rect, border_radius=12)
+        back_text = self.small_font.render("Back", True, WHITE)
+        self.screen.blit(back_text, back_text.get_rect(center=back_rect.center))
+
+    def render_join_multiplayer_menu(self):
+        self.screen.fill((70, 160, 230))
+        center_x = self.screen_width // 2
+        input_w = 280
+        input_h = 50
+        input_y = 240
+        # IP input box
+        input_rect = pygame.Rect(center_x - input_w // 2, input_y, input_w, input_h)
+        pygame.draw.rect(self.screen, WHITE, input_rect, 2)
+        input_text = self.small_font.render(self.join_ip_input, True, WHITE)
+        self.screen.blit(input_text, (input_rect.x + 10, input_rect.y + 10))
+        input_label = self.small_font.render("Host IP Address:", True, WHITE)
+        self.screen.blit(input_label, (input_rect.x, input_rect.y - 30))
+        # JOIN tugmasi
+        btn_width = 180
+        btn_height = 50
+        join_btn_rect = pygame.Rect(center_x - btn_width // 2, input_y + 80, btn_width, btn_height)
+        pygame.draw.rect(self.screen, (24, 134, 42), join_btn_rect, border_radius=12)
+        join_text = self.small_font.render("Join", True, WHITE)
+        self.screen.blit(join_text, join_text.get_rect(center=join_btn_rect.center))
+        # Back tugmasi
+        back_btn_rect = pygame.Rect(center_x - btn_width // 2, input_y + 150, btn_width, btn_height)
+        pygame.draw.rect(self.screen, (200, 100, 100), back_btn_rect, border_radius=12)
+        back_text = self.small_font.render("Back", True, WHITE)
+        self.screen.blit(back_text, back_text.get_rect(center=back_btn_rect.center))
+        # Mouse input aktivligi
+        if self.join_ip_active:
+            pygame.draw.rect(self.screen, (60, 180, 70), input_rect, 3)
+        # Back tugmasi ishlashi
+        mx, my = pygame.mouse.get_pos()
+        if pygame.mouse.get_pressed()[0]:
+            if back_btn_rect.collidepoint(mx, my):
+                self.state = GameState.MULTIPLAYER_MENU
+                self.join_ip_input = ""
+                self.join_ip_active = False
 
     def render_play_menu(self):
         self.screen.fill((70, 160, 230))
