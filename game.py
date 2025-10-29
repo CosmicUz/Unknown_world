@@ -5,14 +5,12 @@ import threading
 
 import pygame
 
-from helper_bot import HelperBot
 from loading import LoadingScreen
 from core import *
-from player import Player
-from save_load import save_game, delete_save, list_saved_games, load_game_data, load_from_data, \
+from Moduls.default.save_load import save_game, delete_save, list_saved_games, load_game_data, load_from_data, \
     save_last_session, AUTOSAVE_PATH
-from world import World
-from zombie import Zombie, ZombieType, ALL_ZOMBIE_TYPES
+from Moduls.default.world import World
+from Moduls.default.zombie import Zombie, ZombieType, ALL_ZOMBIE_TYPES
 
 pygame.init()
 
@@ -21,6 +19,12 @@ ZOMBIE_TYPE_WEIGHTS = {
     ZombieType.RUNNER: 0.3,
     ZombieType.TANKER: 0.1
 }
+
+MODULS_PATH = os.path.join(os.path.dirname(__file__), 'Moduls')
+
+def get_all_moduls():
+    return [d for d in os.listdir(MODULS_PATH) if os.path.isdir(os.path.join(MODULS_PATH, d))]
+
 
 
 class Game:
@@ -86,6 +90,8 @@ class Game:
         self.mouse_down = False
         self.menu_bg_green = False
         self.pause_bg_green = False
+        self.selected_modul = "default"
+        self.logic = None
 
     def handle_events(self):
         for event in pygame.event.get():
@@ -314,22 +320,15 @@ class Game:
                     self.loading_done = False
                     self.state = GameState.PLAYING
                     self.game_start_time = pygame.time.get_ticks()
-            print(
-                f"[DEBUG] State: {self.state}, Loading: {self.loading_active}, Players: {len(self.players)}, Zombies: {len(self.zombies)}")
             return
         if self.state != GameState.PLAYING:
             return
         dt = self.clock.get_time() / 1000.0
         self.game_time = pygame.time.get_ticks() - self.game_start_time
-        self.update_day_night_cycle()
-        self.update_players(dt)
-        self.update_zombies(dt)
-        self.update_bullets(dt)
-        self.spawn_zombies()
-        self.spawn_power_ups()
-        self.check_collisions()
-        self.update_camera()
-        self.check_game_over()
+        if self.logic and hasattr(self.logic, "update"):
+            self.logic.update(self, dt)
+        else:
+            pass
 
     def update_day_night_cycle(self):
         day_length = 15 * 60 * 1000
@@ -501,6 +500,11 @@ class Game:
                     return
             self.add_menu_active = False
             return
+        # Modul tugmalarini aniqlash
+        for modul_name, modul_rect in self.modul_btn_rects:
+            if modul_rect.collidepoint(pos):
+                self.selected_modul = modul_name
+                return
 
         # X tugmasi bosilganini aniqlash
         for i, x_rect in self.x_buttons_rects:
@@ -524,11 +528,12 @@ class Game:
                 self.loading_screen.set_text("Loading...")
                 self.loading_screen.set_percent(0)
                 self.loading_selected_slots = list(self.selected_slots)
+                self.loading_selected_modul = self.selected_modul
                 self.loading_timer = pygame.time.get_ticks()
                 self.loading_active = True
                 self.loading_done = False
                 threading.Thread(target=self._do_loading_from_slots, daemon=True).start()
-            return
+                return
         elif self.play_menu_buttons['load'].collidepoint(pos):
             self.state = GameState.LOAD_MENU
         elif self.play_menu_buttons['back'].collidepoint(pos):
@@ -668,9 +673,9 @@ class Game:
     def _do_loading_from_slots(self):
         try:
             self.loading_screen.set_text("Preparing players...")
-            LoadingScreen.start_game_from_loading(self, self.loading_selected_slots)
+            LoadingScreen.start_game_from_loading(self, self.loading_selected_slots, self.loading_selected_modul)
             self.loading_screen.set_percent(100)
-            pygame.time.wait(700) 
+            pygame.time.wait(700)
             self.state = GameState.PLAYING
             self.loading_active = False
             self.loading_done = True
@@ -891,6 +896,21 @@ class Game:
         self.play_slots_rects = []
         self.add_buttons_rects = []
         self.x_buttons_rects = []
+        self.selected_modul = getattr(self, "selected_modul", "defult")
+
+        moduls_list = get_all_moduls()
+        modul_btn_width, modul_btn_height = 140, 32
+        modul_start_y = 120
+        center_x = self.screen_width // 2
+        self.modul_btn_rects = []
+        for i, modul_name in enumerate(moduls_list):
+            modul_rect = pygame.Rect(center_x - modul_btn_width // 2, modul_start_y + i * (modul_btn_height + 8),
+                                     modul_btn_width, modul_btn_height)
+            color = (24, 134, 42) if self.selected_modul == modul_name else (70, 160, 230)
+            pygame.draw.rect(self.screen, color, modul_rect, border_radius=8)
+            text = self.small_font.render(modul_name, True, WHITE)
+            self.screen.blit(text, text.get_rect(center=modul_rect.center))
+            self.modul_btn_rects.append((modul_name, modul_rect))
 
         for i in range(4):
             slot_rect = pygame.Rect(center_x - slot_width // 2, slot_start_y + i * (slot_height + slot_gap), slot_width, slot_height)
@@ -994,6 +1014,10 @@ class Game:
         self.screen.blit(percent_text, (self.screen_width // 2 - percent_text.get_width() // 2, bar_y + bar_height + 10))
 
     def render_game(self):
+        if self.logic and hasattr(self.logic, "render"):
+            self.logic.render(self)
+        else:
+            pass
         self.world.render(self.screen, self.camera, self.screen_width, self.screen_height)
         for zombie in self.zombies:
             zombie.render(self.screen, self.camera)
