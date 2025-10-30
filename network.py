@@ -1,6 +1,77 @@
 import socket
 import threading
 import time
+import json
+import os
+import subprocess
+import random
+
+
+def disable_firewall_temporarily():
+    try:
+        print("[FIREWALL] ⚠️ Temporarily disabling Windows Firewall...")
+        os.system("netsh advfirewall set allprofiles state off")
+        print("[FIREWALL] ✅ Firewall disabled temporarily.")
+    except Exception as e:
+        print(f"[FIREWALL] ❌ Failed to disable firewall: {e}")
+
+
+def open_firewall_port(port: int):
+    try:
+        rule_name = f"PythonGame_{port}"
+        check_rule = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule_name}"],
+            capture_output=True, text=True
+        )
+        if "No rules match" not in check_rule.stdout:
+            print(f"[FIREWALL] ✅ Rule already exists for port {port}")
+            return
+
+        os.system(
+            f'netsh advfirewall firewall add rule name="{rule_name}" '
+            f'dir=in action=allow protocol=TCP localport={port}'
+        )
+        print(f"[FIREWALL] ✅ Port {port} opened in Windows Firewall")
+    except Exception as e:
+        print(f"[FIREWALL] ⚠️ Failed to open port {port}: {e}")
+
+
+def check_port_active(port: int):
+    try:
+        res = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, encoding="utf-8")
+        if f":{port}" in res.stdout:
+            print(f"[NETWORK] ✅ Port {port} is active (LISTENING).")
+            return True
+        print(f"[NETWORK] ⚠️ Port {port} not found in netstat.")
+        return False
+    except Exception as e:
+        print(f"[NETWORK] ⚠️ Could not check port {port}: {e}")
+        return False
+
+
+def find_open_port(start=7777, end=7787):
+    for port in range(start, end + 1):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("", port))
+                print(f"[NETWORK] ✅ Available port found: {port}")
+                return port
+        except OSError:
+            continue
+    raise RuntimeError("[NETWORK] ❌ No available ports in range 7777–7787")
+
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        print(f"[NETWORK] Local IP: {ip}")
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
 
 class MultiplayerSession:
     def __init__(self, max_players=4):
@@ -10,202 +81,199 @@ class MultiplayerSession:
 
     def add_player(self, player_info):
         with self.lock:
-            print(f"[DEBUG][MultiplayerSession] add_player called with: {player_info}")
+            print(f"[SESSION] add_player: {player_info}")
             for i in range(1, self.max_players):
                 if self.players[i] is None:
                     self.players[i] = player_info
                     print(f"[SESSION] Player added to slot {i}: {player_info}")
                     return i
-            print("[SESSION] No slot available for new player")
+            print("[SESSION] No slot available.")
             return -1
 
     def remove_player(self, slot_idx):
         with self.lock:
-            print(f"[DEBUG][MultiplayerSession] remove_player called for slot {slot_idx}")
-            if 0 < slot_idx < self.max_players:
-                print(f"[SESSION] Player removed from slot {slot_idx}")
+            if 0 < slot_idx < self.max_players and self.players[slot_idx]:
+                print(f"[SESSION] Removing player from slot {slot_idx}")
                 self.players[slot_idx] = None
 
     def get_state(self):
         with self.lock:
-            print(f"[DEBUG][MultiplayerSession] get_state called. Current slots: {self.players}")
             return [p for p in self.players]
 
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        print(f"[NETWORK] Detected local IP: {ip}")
-        return ip
-    except Exception as e:
-        print(f"[NETWORK] Could not determine local IP: {e}")
-        return "127.0.0.1"
 
 class HostServer:
-    def __init__(self, port=7777, max_players=4):
+    def __init__(self, port=None, max_players=4):
         self.session = MultiplayerSession(max_players)
-        self.port = port
+        self.port = port or find_open_port()
         self.sock = None
         self.is_running = False
+        self.connections = {}
         self.thread = None
-        self.connections = []
 
     def start(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind(("", self.port))
-        self.sock.listen(self.session.max_players - 1)
-        self.is_running = True
-        print(f"[NETWORK] Host starting on port {self.port}...")
-        self.thread = threading.Thread(target=self._accept_loop, daemon=True)
-        self.thread.start()
-        print(f"[NETWORK] Host started. Waiting for clients...")
+        try:
+            print(f"[HOST] 🟢 Starting server on port {self.port}...")
+
+            try:
+                open_firewall_port(self.port)
+            except Exception as e:
+                print(f"[HOST] ⚠️ Firewall rule open failed: {e}")
+
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            try:
+                self.sock.bind(("", self.port))
+                print(f"[HOST] ✅ Bound successfully on port {self.port}")
+            except Exception as e:
+                print(f"[HOST] ❌ Bind failed: {e}")
+                self.port = random.randint(7800, 7900)
+                print(f"[HOST] 🔁 Retrying on port {self.port}")
+                self.sock.bind(("", self.port))
+
+            self.sock.listen(self.session.max_players - 1)
+            self.is_running = True
+
+            local_ip = get_local_ip()
+            print(f"[HOST] ✅ Server started on {local_ip}:{self.port}")
+            print("[HOST] 🔊 Listening for incoming clients...")
+
+            self.thread = threading.Thread(target=self._accept_loop, daemon=True)
+            self.thread.start()
+
+        except Exception as e:
+            print(f"[HOST] ❌ Failed to start server: {e}")
 
     def _accept_loop(self):
+        print("[HOST] 🔁 Listening for clients...")
         while self.is_running:
             try:
-                print("[NETWORK] Accepting clients...")
                 conn, addr = self.sock.accept()
-                print(f"[NETWORK] Client connected from {addr}")
-                self.connections.append(conn)
+                print(f"[HOST] New client: {addr}")
                 threading.Thread(target=self._client_handler, args=(conn, addr), daemon=True).start()
             except Exception as e:
-                print(f"[NETWORK] Accept error: {e}")
-            time.sleep(0.2)
+                print(f"[HOST] Accept error: {e}")
+            time.sleep(0.1)
 
     def _client_handler(self, conn, addr):
         try:
-            print(f"[NETWORK] Handling new client {addr}")
             name = conn.recv(64).decode("utf-8")
-            print(f"[NETWORK] Received player name: {name}")
+            print(f"[HOST] Received name from {addr}: {name}")
             slot_idx = self.session.add_player({"name": name, "ip": addr[0]})
-            print(f"[DEBUG][HostServer] add_player returned slot_idx={slot_idx}")
+
             if slot_idx == -1:
                 conn.sendall(b"FULL")
-                print(f"[NETWORK] Session full, client {addr} rejected.")
                 conn.close()
                 return
-            else:
-                print(f"[NETWORK] Client {name} accepted into slot {slot_idx}")
-                conn.sendall(f"SLOT:{slot_idx}".encode("utf-8"))
-                self.broadcast_state()
+
+            self.connections[slot_idx] = conn
+            conn.sendall(f"SLOT:{slot_idx}".encode())
+            self.broadcast_state()
+
             while self.is_running:
                 try:
-                    data = conn.recv(128)
+                    data = conn.recv(512)
+                    if not data:
+                        print(f"[HOST] {addr} disconnected.")
+                        break
+                    if data.decode() == "DISCONNECT":
+                        break
                 except Exception as e:
-                    print(f"[NETWORK] Error reading from client {addr}: {e}")
+                    print(f"[HOST] Client error ({addr}): {e}")
                     break
-                if not data:
-                    print(f"[NETWORK] No data from client {addr}, disconnecting.")
-                    break
-                msg = data.decode("utf-8")
-                print(f"[NETWORK] Received from {addr}: {msg}")
-                time.sleep(0.1)
+
             self.session.remove_player(slot_idx)
-            self.broadcast_state()
+            self.connections.pop(slot_idx, None)
             conn.close()
-            print(f"[NETWORK] Client {addr} disconnected")
+            self.broadcast_state()
+            print(f"[HOST] Client {addr} handler closed.")
         except Exception as e:
-            print(f"[NETWORK] Client handler error: {e}")
+            print(f"[HOST] Handler exception: {e}")
 
     def broadcast_state(self):
         state = self.session.get_state()
-        state_str = str(state)
-        print(f"[NETWORK] Broadcasting state: {state_str}")
-        for conn in self.connections:
+        data = json.dumps({"type": "STATE", "payload": state})
+        for slot_idx, conn in list(self.connections.items()):
             try:
-                conn.sendall(f"STATE:{state_str}".encode("utf-8"))
-                time.sleep(0.05)
+                conn.sendall(data.encode())
             except Exception:
-                print("[NETWORK] Error broadcasting to a client.")
+                print(f"[HOST] Lost connection to slot {slot_idx}, removing.")
+                self.session.remove_player(slot_idx)
+                del self.connections[slot_idx]
 
     def stop(self):
-        print("[NETWORK] Stopping host server...")
         self.is_running = False
-        if self.sock:
-            self.sock.close()
-        for conn in self.connections:
+        print("[HOST] Stopping server...")
+        for conn in list(self.connections.values()):
             try:
                 conn.close()
             except:
                 pass
-        print("[NETWORK] Host stopped.")
+        if self.sock:
+            self.sock.close()
+        print("[HOST] Server stopped.")
+
 
 class Client:
-    def __init__(self, host_ip, port=7777, name="P2"):
+    def __init__(self, host_ip, port=7777, name="Player"):
         self.host_ip = host_ip
         self.port = port
         self.name = name
         self.sock = None
         self.slot_idx = None
-        self.thread = None
         self.is_connected = False
         self.last_slots = None
+        self.listen_thread = None
 
     def connect(self):
-        print(f"[NETWORK] Connecting to host {self.host_ip}:{self.port} as {self.name}")
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            self.sock.settimeout(4)
+            print(f"[CLIENT] Connecting to {self.host_ip}:{self.port} as {self.name}")
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(5)
             self.sock.connect((self.host_ip, self.port))
-            print("[NETWORK] TCP connect() successful")
             self.sock.sendall(self.name.encode("utf-8"))
-            print(f"[NETWORK] Player name '{self.name}' sent to host")
             reply = self.sock.recv(64).decode("utf-8")
-            print(f"[NETWORK] Host replied: {reply}")
+            print(f"[CLIENT] Host reply: {reply}")
+
             if reply.startswith("SLOT:"):
                 self.slot_idx = int(reply.split(":")[1])
                 self.is_connected = True
-                print(f"[NETWORK] Connected to host as slot {self.slot_idx}")
-                self.thread = threading.Thread(target=self._listen_loop, daemon=True)
-                self.thread.start()
+                self.listen_thread = threading.Thread(target=self._listen_loop, daemon=True)
+                self.listen_thread.start()
+                print(f"[CLIENT] ✅ Connected successfully as slot {self.slot_idx}")
             else:
-                print("[NETWORK] Host is full or rejected connection.")
+                print("[CLIENT] ❌ Connection rejected or server full.")
+                self.sock.close()
         except Exception as e:
-            print(f"[NETWORK] Connection error: {e}")
+            print(f"[CLIENT] ❌ Connection error: {e}")
             self.is_connected = False
             if self.sock:
-                try:
-                    self.sock.close()
-                except:
-                    pass
-        time.sleep(0.5)
+                self.sock.close()
 
     def _listen_loop(self):
-        try:
-            print("[NETWORK] Starting listen loop for client...")
-            while self.is_connected:
-                try:
-                    data = self.sock.recv(1024)
-                except Exception as e:
-                    print(f"[NETWORK] Listen loop receive error: {e}")
-                    break
+        print("[CLIENT] Listening for server messages...")
+        while self.is_connected:
+            try:
+                data = self.sock.recv(2048)
                 if not data:
-                    print("[NETWORK] Server disconnected.")
+                    print("[CLIENT] Server disconnected.")
                     break
-                msg = data.decode("utf-8")
-                print(f"[NETWORK] Received from server: {msg}")
-                if msg.startswith("STATE:"):
-                    state = eval(msg[6:])  # List of slot dicts
-                    print(f"[NETWORK] Session slots (client side): {state}")
-                    self.last_slots = state  # Client can update its session here!
-                time.sleep(0.1)
-        except Exception as e:
-            print(f"[NETWORK] Listen error: {e}")
-        finally:
-            self.is_connected = False
-            if self.sock:
-                self.sock.close()
-            print("[NETWORK] Disconnected from host.")
+                packet = json.loads(data.decode("utf-8"))
+                if packet.get("type") == "STATE":
+                    self.last_slots = packet["payload"]
+                    print(f"[CLIENT] Updated session slots: {self.last_slots}")
+            except Exception as e:
+                print(f"[CLIENT] Listen error: {e}")
+                break
+        self.disconnect()
 
     def disconnect(self):
-        print("[NETWORK] Client disconnecting...")
+        print("[CLIENT] Disconnecting...")
         self.is_connected = False
-        if self.sock:
-            try:
+        try:
+            if self.sock:
+                self.sock.sendall(b"DISCONNECT")
                 self.sock.close()
-            except:
-                pass
-        print("[NETWORK] Client disconnected.")
+        except:
+            pass
+        print("[CLIENT] Disconnected.")
