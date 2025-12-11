@@ -10,28 +10,35 @@ from .player import Player, Drone
 from .world import World, PowerUp, WorldObject
 from .zombie import Zombie, ZombieType
 
-SAVE_ROOT = os.path.join(os.path.dirname(__file__), 'saves')
-AUTOSAVE_PATH = os.path.join(SAVE_ROOT, 'autosave.db')
+# Savlarni Documents/Unknown_World/saves/(modul_nomi)/ da saqlaymiz
+DOCUMENTS_PATH = os.path.join(os.path.expanduser("~"), "Documents", "Unknown_World", "saves")
+SAVE_ROOT = DOCUMENTS_PATH
+AUTOSAVE_PATH = os.path.join(SAVE_ROOT, "autosave.db")
 
 
+SAVE_ROOT = DOCUMENTS_PATH
+AUTOSAVE_PATH = os.path.join(SAVE_ROOT, "autosave.db")
 
-def get_save_path(save_name):
-    os.makedirs(SAVE_ROOT, exist_ok=True)
+
+def get_save_path(save_name, modul_name="default"):
+    """Modul nomiga qarab save yo'lini qaytaradi"""
+    modul_save_root = os.path.join(SAVE_ROOT, modul_name)
+    os.makedirs(modul_save_root, exist_ok=True)
     if save_name == "autosave":
-        return AUTOSAVE_PATH
-    return os.path.join(SAVE_ROOT, f"{save_name}.db")
+        return os.path.join(modul_save_root, "autosave.db")
+    return os.path.join(modul_save_root, f"{save_name}.db")
 
 
-def get_last_session_path(game_mode):
-    return AUTOSAVE_PATH
+def get_last_session_path(game_mode, modul_name="default"):
+    return get_save_path("autosave", modul_name)
 
 
-
-def save_last_session(game):
-    db_path = AUTOSAVE_PATH
+def save_last_session(game, modul_name="default"):
+    db_path = get_save_path("autosave", modul_name)
     if os.path.exists(db_path):
         os.remove(db_path)
-    save_game(game, "autosave", game.mode)
+    save_game(game, "autosave", game.mode, modul_name)
+
 
 def create_tables(conn):
     c = conn.cursor()
@@ -91,8 +98,8 @@ def create_tables(conn):
     conn.commit()
 
 
-def save_game(game, save_name, game_mode):
-    db_path = get_save_path(save_name)
+def save_game(game, save_name, game_mode, modul_name="default"):
+    db_path = get_save_path(save_name, modul_name)
     if os.path.exists(db_path):
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
@@ -107,18 +114,21 @@ def save_game(game, save_name, game_mode):
     create_tables(conn)
     c = conn.cursor()
 
-    # Playerlar (P1 va P2 uchun har doim id = 0, id = 1)
+    # Playerlar
     for idx, player in enumerate(game.players):
         drone_json = None
         if player.drone:
             drone_json = json.dumps({
                 "position": [player.drone.position.x, player.drone.position.y],
-                "level": player.drone.level, "max_level": player.drone.max_level,
-                "player_id": player.drone.player_id, "last_fire_time": player.drone.last_fire_time,
-                "last_rocket_time": player.drone.last_rocket_time, "size": player.drone.size
+                "level": player.drone.level,
+                "max_level": player.drone.max_level,
+                "player_id": player.drone.player_id,
+                "last_fire_time": player.drone.last_fire_time,
+                "last_rocket_time": player.drone.last_rocket_time,
+                "size": player.drone.size
             })
         player_type = "bot" if isinstance(player, HelperBot) else "player"
-        player_color = list(getattr(player, "color", (200, 200, 200)))  # PATCH: for sikl ichiga o‘tkazildi
+        player_color = list(getattr(player, "color", (200, 200, 200)))
         c.execute('''
             INSERT INTO player VALUES (
                 ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
@@ -172,7 +182,7 @@ def save_game(game, save_name, game_mode):
             p.position.x, p.position.y, p.type, p.size, int(p.active)
         ))
 
-    # Meta/statistika
+    # Meta
     c.execute('''
         INSERT INTO meta VALUES (
             1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
@@ -196,7 +206,8 @@ def load_last_session():
     db_path = AUTOSAVE_PATH
     if not os.path.exists(db_path):
         return None
-    return load_game_data(GameMode.Offline, "autosave")
+    return load_game_data("autosave")
+
 
 def delete_last_session_files():
     for path in [SAVE_ROOT, AUTOSAVE_PATH]:
@@ -207,25 +218,27 @@ def delete_last_session_files():
                     print(f"[INFO] Last session fayl o'chirildi: {path}")
                     break
                 except PermissionError:
-                    print(f"[WARN] Faylni o‘chirishda xatolik, 0.3s kutiladi: {path}")
+                    print(f"[WARN] Faylni o'chirishda xatolik, 0.3s kutiladi: {path}")
                     time.sleep(0.3)
                 except Exception as e:
-                    print(f"[ERROR] Faylni o‘chirishda boshqa xatolik: {path} {e}")
+                    print(f"[ERROR] Faylni o'chirishda boshqa xatolik: {path} {e}")
                     break
 
-def try_load_game_any_mode(save_name):
-    for mode in [GameMode.Offline, GameMode.Online]:
-        db_path = get_save_path(save_name)
+
+def try_load_game_any_mode(save_name, modul_name="default"):
+    for mode in [GameMode.Offline]:
+        db_path = get_save_path(save_name, modul_name)
         if os.path.exists(db_path):
-            data = load_game_data(mode, save_name)
+            data = load_game_data(save_name, modul_name=modul_name)
             if data is not None:
                 print(f"[INFO] Save '{save_name}' {mode.name} rejimida ochildi!")
                 return data, mode
     print(f"[ERROR] '{save_name}' nomli save fayli topilmadi yoki mos kelmadi!")
     return None, None
 
-def load_game_data(save_name, progress_callback=None):
-    db_path = get_save_path(save_name)
+
+def load_game_data(save_name, progress_callback=None, modul_name="default"):
+    db_path = get_save_path(save_name, modul_name)
     print("[DEBUG] DB path:", db_path)
     print("[DEBUG] File exists:", os.path.exists(db_path))
     if not os.path.exists(db_path):
@@ -235,7 +248,6 @@ def load_game_data(save_name, progress_callback=None):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     data = {}
-    # Progress uchun
     total = 5
     step = 0
 
@@ -243,7 +255,7 @@ def load_game_data(save_name, progress_callback=None):
     meta = c.execute('SELECT * FROM meta WHERE id=1').fetchone()
     print("[DEBUG] meta row:", meta)
     if meta is None:
-        print("[ERROR] meta jadvali bo‘sh yoki saqlashda xatolik bo‘ldi!")
+        print("[ERROR] meta jadvali bo'sh yoki saqlashda xatolik bo'ldi!")
         conn.close()
         return None
     (
@@ -276,7 +288,7 @@ def load_game_data(save_name, progress_callback=None):
     if progress_callback:
         progress_callback(int(step * 100 / total))
 
-    # Playerlar (always ordered by id for multiplayer)
+    # Playerlar
     player_data = []
     player_rows = c.execute('SELECT * FROM player ORDER BY id ASC').fetchall()
     print("[DEBUG] player rows:", player_rows)
@@ -287,7 +299,7 @@ def load_game_data(save_name, progress_callback=None):
             protection_circle_active, protection_circle_radius, protection_timer, protection_duration,
             revive_progress, revive_duration, being_revived,
             invulnerability_time, invulnerability_duration, last_fire_time, last_damage_time,
-            drone_json
+            drone_json, player_type, color_json
         ) = row
         pdata = {
             "id": pid,
@@ -315,6 +327,8 @@ def load_game_data(save_name, progress_callback=None):
             "last_fire_time": last_fire_time,
             "last_damage_time": last_damage_time,
             "drone": json.loads(drone_json) if drone_json else None,
+            "type": player_type,
+            "color": json.loads(color_json) if color_json else [200, 200, 200]
         }
         player_data.append(pdata)
     data["player"] = player_data
@@ -362,7 +376,7 @@ def load_game_data(save_name, progress_callback=None):
     if progress_callback:
         progress_callback(int(step * 100 / total))
 
-    # PowerUps va loaded_chunks
+    # PowerUps
     power_ups_data = []
     for row in c.execute('SELECT * FROM powerup').fetchall():
         _, px, py, ptype, size, active = row
@@ -383,6 +397,7 @@ def load_game_data(save_name, progress_callback=None):
 
     conn.close()
     return data
+
 
 def load_from_data(game, data):
     # --- Playerlar ---
@@ -419,20 +434,20 @@ def load_from_data(game, data):
         player.invulnerability_duration = safe_int(safe_get(pdata, "invulnerability_duration", 3000))
         player.last_fire_time = safe_int(safe_get(pdata, "last_fire_time", 0))
         player.last_damage_time = safe_int(safe_get(pdata, "last_damage_time", 0))
-        # Drone
+
+    # --- Drone ---
         drone_data = safe_get(pdata, "drone", None)
         if drone_data:
-            drone = Drone(
-                Vector2(*safe_get(drone_data, "position", [0, 0])),
-                safe_int(safe_get(drone_data, "player_id", player.id))
-            )
+            drone = Drone(safe_int(safe_get(drone_data, "player_id", player.id)))
+            drone.position = Vector2(*safe_get(drone_data, "position", [0, 0]))
             drone.level = safe_int(safe_get(drone_data, "level", 1))
-            drone.max_level = safe_int(safe_get(drone_data, "max_level", 1))
+            drone.max_level = safe_int(safe_get(drone_data, "max_level", 10))
             drone.last_fire_time = safe_int(safe_get(drone_data, "last_fire_time", 0))
             drone.last_rocket_time = safe_int(safe_get(drone_data, "last_rocket_time", 0))
-            drone.size = safe_int(safe_get(drone_data, "size", 20))
+            drone.size = safe_int(safe_get(drone_data, "size", 16))
             player.drone = drone
         game.players.append(player)
+    
     if len(game.players) > 1:
         game.players.sort(key=lambda p: p.id)
 
@@ -450,7 +465,7 @@ def load_from_data(game, data):
         zombie.active = safe_bool(safe_get(zdata, "active", True))
         game.zombies.append(zombie)
 
-    # --- World, worldObjects va powerups ---
+    # --- World ---
     world_data = data.get("world", {})
     game.world = World()
 
@@ -460,7 +475,7 @@ def load_from_data(game, data):
         powerup = PowerUp(Vector2(*safe_get(p, "position", [0, 0])), safe_get(p, "type", "unknown"), size=safe_int(safe_get(p, "size", 20)))
         powerup.active = safe_bool(safe_get(p, "active", True))
         game.world.power_ups.append(powerup)
-    # loaded_chunks
+    
     game.world.loaded_chunks = set(world_data.get("loaded_chunks", []))
 
     # WorldObjects
@@ -475,7 +490,7 @@ def load_from_data(game, data):
         )
         game.world.objects.append(obj)
 
-    # --- General game meta/statistika ---
+    # --- Meta ---
     meta = data.get("meta", {})
     try:
         game.mode = safe_enum(GameMode, meta.get("mode", "Offline"), GameMode.Offline)
@@ -502,13 +517,18 @@ def load_from_data(game, data):
     print("Zombies loaded:", len(game.zombies))
     print("World objects loaded:", len(game.world.objects))
 
-def list_saved_games():
-    files = [f for f in os.listdir(SAVE_ROOT) if f.endswith('.db')]
+
+def list_saved_games(modul_name="default"):
+    """Tanlangan modul uchun saqlangan o'yinlarni ro'yxat qaytaradi"""
+    modul_save_path = os.path.join(SAVE_ROOT, modul_name)
+    if not os.path.exists(modul_save_path):
+        return []
+    files = [f for f in os.listdir(modul_save_path) if f.endswith('.db') and f != 'autosave.db']
     return [f[:-3] for f in files]
 
 
-def delete_save(save_name):
-    db_path = get_save_path(save_name)
+def delete_save(save_name, modul_name="default"):
+    db_path = get_save_path(save_name, modul_name)
     if save_name == "autosave":
         print("[ERROR] Avtosave faylini o'chirib bo'lmaydi!")
         return

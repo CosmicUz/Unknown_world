@@ -5,6 +5,7 @@ from Moduls.default.helper_bot import HelperBot
 from Moduls.default.world import World
 import os
 import importlib.util
+import importlib
 
 
 def load_game_logic(modul_name):
@@ -32,86 +33,30 @@ class LoadingScreen:
         self.percent = 0
 
     @staticmethod
-    def start_game_from_loading(game, selected_slots, selected_modul="default", save_data=None):
-        game_logic_module = load_game_logic(selected_modul)
-        game.logic = game_logic_module
+    def start_game_from_loading(screen, width, height, selected_slots, selected_modul="default", font=None, small_font=None, save_data=None):
+        """
+        Start actual module game by delegating to Moduls.<modul>.modul_loading -> that module will import
+        the chosen `game_logic` and run its `run_game` entrypoint.
+        """
+        try:
+            modul_name = selected_modul if selected_modul else "default"
+            modul_loading_path = f"Moduls.{modul_name}.modul_loading"
+            modul_loading = importlib.import_module(modul_loading_path)
+        except Exception as e:
+            print(f"[loading.py] ERROR importing modul_loading for {selected_modul}: {e}")
+            # Fallback to default modul_loading if exists
+            try:
+                modul_loading = importlib.import_module("Moduls.default.modul_loading")
+            except Exception as e2:
+                print(f"[loading.py] ERROR fallback modul_loading: {e2}")
+                raise
 
         try:
-            game_logic_module = load_game_logic(selected_modul if selected_modul else "default")
+            # delegate starting the module game; modul_loading is expected to provide
+            # `start_modul_game(screen, width, height, selected_slots, selected_modul)`
+            modul_loading.start_modul_game(screen, width, height, selected_slots, selected_modul)
         except Exception as e:
-            print(f"[Loading] error loading game logic for modul {selected_modul}: {e}")
-            game_logic_module = load_game_logic("default")
-        game.logic = game_logic_module
-
-        if hasattr(game.logic, "setup_players"):
-            game.logic.setup_players(game, selected_slots)
-        else:
-            player_colors = {
-                1: (20, 120, 255),
-                2: (220, 40, 40),
-                101: (60, 180, 70),
-                102: (220, 220, 40),
-                103: (30, 30, 30),
-                104: (255, 255, 255),
-            }
-            player_controls = {
-                1: {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d,
-                    'shoot': [pygame.K_f, pygame.K_SPACE]},
-                2: {'up': pygame.K_UP, 'down': pygame.K_DOWN, 'left': pygame.K_LEFT, 'right': pygame.K_RIGHT,
-                    'shoot': [pygame.K_k]},
-            }
-            slot_spawns = {
-                0: Vector2(-50, 50),
-                1: Vector2(50, 50),
-                2: Vector2(-50, -50),
-                3: Vector2(50, -50),
-            }
-            slot_ids = ['s1', 's2', 's3', 's4']
-            game.players.clear()
-            for slot in selected_slots:
-                color = player_colors.get(slot['id'], (200, 200, 200))
-                controls = player_controls.get(slot['id'], {}) if slot['type'] == 'player' else {}
-                spawn_pos = slot_spawns.get(selected_slots.index(slot), Vector2(0, 0))
-                slot_id = slot_ids[selected_slots.index(slot)] if selected_slots.index(slot) < len(
-                    slot_ids) else f"s{selected_slots.index(slot) + 1}"
-                if slot['type'] == 'player':
-                    p = Player(spawn_pos, slot['id'], color=color, controls=controls)
-                    p.slot_id = slot_id
-                    game.players.append(p)
-                elif slot['type'] == 'bot':
-                    b = HelperBot(spawn_pos, slot['id'], color=color)
-                    b.slot_id = slot_id
-                    bot_count = sum(1 for s in selected_slots if s['type'] == 'bot')
-                    if bot_count > 1:
-                        if selected_slots.index(slot) == 0:
-                            b.is_leader = True
-                            b.leader_id = None
-                        else:
-                            b.is_leader = False
-                            b.leader_id = selected_slots[0]['id']
-                    else:
-                        b.is_leader = True
-                        b.leader_id = None
-                    game.players.append(b)
-            player_count = sum(1 for slot in selected_slots if slot['type'] == 'player')
-            bot_count = sum(1 for slot in selected_slots if slot['type'] == 'bot')
-            total = player_count + bot_count
-            can_go_down = total >= 2
-            multi_player_mode = total >= 2
-            for p in game.players:
-                p.can_go_down = can_go_down
-                p.multi_player_mode = multi_player_mode
-
-        if hasattr(game.logic, "setup_world"):
-            game.logic.setup_world(game)
-        else:
-            game.zombies.clear()
-            game.bullets.clear()
-            game.world = World()
-            game.zombies_killed = 0
-            game.current_day = 1
-            game.is_night = False
-            game.zombie_strength = 1
+            print(f"[loading.py] ERROR starting modul game: {e}")
 
     def set_text(self, text):
         self.text = text

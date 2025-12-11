@@ -15,7 +15,7 @@ class Player:
         self.id = player_id
         self.health = 100
         self.max_health = 100
-        self.can_go_down = False
+        self.can_go_down = True  
         self.multi_player_mode = False
         self.shield = 0
         self.max_shield = 100
@@ -31,18 +31,18 @@ class Player:
         self.color = color if color is not None else (40, 120, 255)
 
         # Downed system variables
-        self.down_time = 0  # When player was downed
-        self.down_timer_duration = 60000  # 60 seconds in milliseconds
+        self.down_time = 0
+        self.down_timer_duration = 60000
         self.protection_circle_active = False
-        self.protection_circle_radius = self.size * 2  # Circle larger than player
+        self.protection_circle_radius = self.size * 2
         self.protection_timer = 0
-        self.protection_duration = 10000  # 10 seconds
+        self.protection_duration = 10000
         self.revive_progress = 0
-        self.revive_duration = 5000  # 5 seconds
+        self.revive_duration = 5000
         self.being_revived = False
         self.reviver_player = None
         self.invulnerability_time = 0
-        self.invulnerability_duration = 3000  # 3 seconds after revive
+        self.invulnerability_duration = 3000
 
         self.last_fire_time = 0
 
@@ -56,7 +56,6 @@ class Player:
         self.target_zombie = None
 
     def update(self, dt: float, power_ups: List, zombies: List[Zombie], other_players: List) -> List[Bullet]:
- 
         bullets = []
         current_time = pygame.time.get_ticks()
 
@@ -88,7 +87,6 @@ class Player:
         if movement.length() > 0:
             movement = movement.normalize()
             self.position = self.position + movement * self.speed * dt
-            print(f"[DEBUG] Player {self.id} pozitsiya: {self.position}")
             
         # Auto-target nearest zombie
         self.target_zombie = self.find_nearest_zombie(zombies)
@@ -112,7 +110,7 @@ class Player:
             # Shot gun fire another bullet
             if self.weapon_type == WeaponType.SHOT_GUN:
                 angle = math.atan2(direction.y, direction.x)
-                offset_angle = 0.15  # You can adjust this for spread
+                offset_angle = 0.15
 
                 # Left spread
                 left_direction = Vector2(
@@ -130,8 +128,6 @@ class Player:
 
             self.last_fire_time = pygame.time.get_ticks()
 
-
-
         # Update drone
         if self.drone:
             # Drone follows player with circular motion
@@ -145,12 +141,6 @@ class Player:
 
             drone_bullets = self.drone.update(dt, self.position, zombies)
             bullets.extend(drone_bullets)
-
-        if (
-            math.isnan(self.position.x) or math.isnan(self.position.y) or
-            math.isinf(self.position.x) or math.isinf(self.position.y)
-        ):
-            print(f"[ERROR] {self.__class__.__name__} {getattr(self, 'id', '')} pozitsiyasi noto'g'ri: {self.position}")
 
         # Check level progression
         self.check_level_progression()
@@ -186,7 +176,7 @@ class Player:
                         self.protection_timer = current_time
 
                     # Progress revive
-                    self.revive_progress += 16.67  # ~1000ms/60fps = 16.67ms per frame
+                    self.revive_progress += 16.67
 
                     if self.revive_progress >= self.revive_duration:
                         self.revive()
@@ -206,7 +196,7 @@ class Player:
 
     def revive(self):
         self.state = PlayerState.ALIVE
-        self.health = 30  # 30% of max health (30 out of 100)
+        self.health = 30
         self.protection_circle_active = False
         self.revive_progress = 0
         self.being_revived = False
@@ -225,15 +215,15 @@ class Player:
     def can_fire(self) -> bool:
         current_time = pygame.time.get_ticks()
         fire_rates = {
-            WeaponType.PISTOL: 1000,  # 1 shot per second
-            WeaponType.DUAL_PISTOLS: 500,  # 2 shots per 
-            WeaponType.SHOT_GUN: 300,  # 3 shots per second
-            WeaponType.M_16: 333,  # 3 shots per second
-            WeaponType.AK_47: 200,  # 5 shots per second
-            WeaponType.DRONE: 200,  # 5 shots per second
-            WeaponType.M_249: 100,  # 10 shots per second
-            WeaponType.MG_3: 66,  # 15 shots per second
-            WeaponType.MINI_GUN: 50  # 20 shots per second
+            WeaponType.PISTOL: 1000,
+            WeaponType.DUAL_PISTOLS: 500,
+            WeaponType.SHOT_GUN: 300,
+            WeaponType.M_16: 333,
+            WeaponType.AK_47: 200,
+            WeaponType.DRONE: 200,
+            WeaponType.M_249: 100,
+            WeaponType.MG_3: 66,
+            WeaponType.MINI_GUN: 50
         }
         return current_time - self.last_fire_time >= fire_rates[self.weapon_type]
 
@@ -261,7 +251,7 @@ class Player:
 
         # Find zombie within range (300 units)
         nearest_zombie = None
-        nearest_distance = 300  # Maximum shooting range
+        nearest_distance = 300
 
         for zombie in active_zombies:
             distance = (self.position - zombie.position).length()
@@ -272,7 +262,7 @@ class Player:
         return nearest_zombie
 
     def check_level_progression(self):
-        kills_needed = 15 + random.randint(0, 15)  # 15-30 kills
+        kills_needed = 15 + random.randint(0, 15)
         if self.zombie_kills >= kills_needed * self.level:
             self.level_up()
 
@@ -289,7 +279,7 @@ class Player:
         elif self.level >= 30:
             self.weapon_type = WeaponType.DRONE
             if not self.drone:
-                self.drone = Drone(self.id)
+                self.drone = Drone(self.id)  # ✅ To'g'ri constructor chaqirilmoqda
         elif self.level >= 20:
             self.weapon_type = WeaponType.AK_47
         elif self.level >= 15:
@@ -338,13 +328,12 @@ class Player:
         else:
             self.health = max(0, self.health - damage)
             if self.health <= 0:
-                # Yangi logika: flaglar orqali boshqariladi
+                # ✅ Multiplayer rejimda downed holatiga o'tish
                 if self.can_go_down and self.multi_player_mode:
                     self.go_down()
                 else:
                     self.state = PlayerState.DEAD
 
-                    
     def go_down(self):
         """Player goes down instead of dying immediately"""
         self.state = PlayerState.DOWNED
@@ -382,9 +371,7 @@ class Player:
                 int(self.position.x - camera.x),
                 int(self.position.y - camera.y)
             )
-            # Draw circle outline
             pygame.draw.circle(screen, LIGHT_BLUE, circle_screen_pos, int(self.protection_circle_radius), 3)
-            # Draw semi-transparent fill
             circle_surface = pygame.Surface((self.protection_circle_radius * 2, self.protection_circle_radius * 2),
                                             pygame.SRCALPHA)
             pygame.draw.circle(circle_surface, (135, 206, 235, 50),
@@ -398,9 +385,7 @@ class Player:
             pygame.draw.rect(screen, DARK_GRAY, (*screen_pos, self.size, self.size))
             return
         elif self.state == PlayerState.DOWNED:
-            # Draw downed player in gray with plus symbol
             pygame.draw.rect(screen, GRAY, (*screen_pos, self.size, self.size))
-            # Draw large plus symbol
             plus_size = self.size // 3
             center_x = screen_pos[0] + self.size // 2
             center_y = screen_pos[1] + self.size // 2
@@ -409,7 +394,6 @@ class Player:
             pygame.draw.rect(screen, WHITE,
                              (center_x - plus_size // 6, center_y - plus_size // 2, plus_size // 3, plus_size))
 
-            # Draw countdown timer
             current_time = pygame.time.get_ticks()
             time_left = max(0, self.down_timer_duration - (current_time - self.down_time))
             seconds_left = int(time_left / 1000)
@@ -418,7 +402,6 @@ class Player:
             timer_rect = timer_text.get_rect(center=(center_x, screen_pos[1] - 10))
             screen.blit(timer_text, timer_rect)
 
-            # Draw revive progress if being revived
             if self.being_revived:
                 progress_percent = self.revive_progress / self.revive_duration
                 bar_width = self.size
@@ -431,7 +414,6 @@ class Player:
         # Draw alive player with invulnerability effect
         color = self.color
         if self.invulnerability_time > 0:
-            # Flashing effect during invulnerability
             if int(pygame.time.get_ticks() / 100) % 2:
                 color = tuple(min(255, c + 100) for c in color)
         pygame.draw.rect(screen, color, (*screen_pos, self.size, self.size))
@@ -446,8 +428,6 @@ class Player:
             pygame.draw.line(screen, BLACK,
                              (screen_pos[0] + self.size // 2, screen_pos[1] + self.size // 2),
                              (int(weapon_end.x), int(weapon_end.y)), 3)
-
-            # Auto aim targeting line removed - invisible now
 
         # Draw health bar
         self.render_health_bar(screen, screen_pos)
@@ -500,37 +480,34 @@ class Player:
                           int(bar_width * shield_percent), bar_height))
 
     def render_level_indicator(self, screen, screen_pos):
-        # Level text above player
         font = pygame.font.Font(None, 24)
         level_text = f"LVL {self.level}"
 
-        # Color coding for different level ranges
         if self.level >= 999:
-            color = (255, 215, 0)  # Gold for max level
+            color = (255, 215, 0)
         elif self.level >= 500:
-            color = (255, 0, 0)  # Red for high levels
+            color = (255, 0, 0)
         elif self.level >= 100:
-            color = (255, 165, 0)  # Orange for high levels
+            color = (255, 165, 0)
         elif self.level >= 50:
-            color = (128, 0, 128)  # Purple for mid levels
+            color = (128, 0, 128)
         elif self.level >= 20:
-            color = (0, 255, 255)  # Cyan for medium levels
+            color = (0, 255, 255)
         else:
-            color = WHITE  # White for low levels
+            color = WHITE
 
         text_surface = font.render(level_text, True, color)
         text_rect = text_surface.get_rect()
         text_rect.centerx = screen_pos[0] + self.size // 2
         text_rect.bottom = screen_pos[1] - 5
 
-        # Draw background for better visibility
         bg_rect = text_rect.inflate(4, 2)
         pygame.draw.rect(screen, (0, 0, 0, 128), bg_rect)
         screen.blit(text_surface, text_rect)
 
 
 class Drone:
-    def __init__(self, player_id: int):
+    def __init__(self, player_id: int):  # ✅ To'g'ri constructor
         self.position = Vector2(0, 0)
         self.level = 1
         self.max_level = 10
@@ -563,13 +540,11 @@ class Drone:
             current_time = pygame.time.get_ticks()
 
             if distance <= 200:
-                # Regular shots
-                if current_time - self.last_fire_time >= 1000:  # 1 shot per second
+                if current_time - self.last_fire_time >= 1000:
                     shoot_direction = (self.target.position - self.position).normalize()
                     bullets.append(Bullet(self.position, shoot_direction, 8, self.player_id, 300))
                     self.last_fire_time = current_time
 
-                # Rocket shots at max level
                 if self.level >= 10 and current_time - self.last_rocket_time >= 5000:
                     shoot_direction = (self.target.position - self.position).normalize()
                     bullets.append(Bullet(self.position, shoot_direction, 25, self.player_id, 200))
@@ -578,7 +553,7 @@ class Drone:
         return bullets
 
     def add_kill(self):
-        if random.random() < 0.1:  # 10% chance to level up per kill
+        if random.random() < 0.1:
             self.level = min(self.level + 1, self.max_level)
 
     def render(self, screen, camera):
@@ -590,7 +565,6 @@ class Drone:
         color = ORANGE if self.level >= 10 else BLUE
         pygame.draw.rect(screen, color, (*screen_pos, self.size, self.size))
 
-        # Draw level indicator
         font = pygame.font.Font(None, 16)
         text = font.render(str(self.level), True, WHITE)
         text_rect = text.get_rect(center=(screen_pos[0] + self.size // 2,

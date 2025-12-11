@@ -1,5 +1,6 @@
-import pygame 
-from game import Game
+import pygame
+from menu import Menu
+
 
 def show_start_screen(width=1200, height=800):
     pygame.init()
@@ -37,12 +38,8 @@ def show_start_screen(width=1200, height=800):
         clock.tick(60)
     return run_screen, run_screen.get_width(), run_screen.get_height(), fullscreen
 
+
 if __name__ == "__main__":
     run_screen, width, height, fullscreen = show_start_screen()
-    game = Game(screen=run_screen, screen_width=width, screen_height=height)
-    game.fullscreen = fullscreen
-    pygame.display.set_mode((width, height), pygame.FULLSCREEN if fullscreen else 0)
-    game.screen = pygame.display.get_surface()
-    game.screen_width = game.screen.get_width()
-    game.screen_height = game.screen.get_height()
-    game.run()
+    menu = Menu(screen=run_screen, screen_width=width, screen_height=height)
+    menu.run()
