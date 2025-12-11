@@ -74,15 +74,33 @@ class GameEngine:
         """Initialize players and bots from slot configuration."""
         self.players.clear()
         
+        PLAYER_CONTROLS = {
+            1: {
+                'up': pygame.K_w,
+                'down': pygame.K_s,
+                'left': pygame.K_a,
+                'right': pygame.K_d,
+                'shoot': [pygame.K_SPACE, pygame.K_f]
+            },
+            2: {
+                'up': pygame.K_UP,
+                'down': pygame.K_DOWN,
+                'left': pygame.K_LEFT,
+                'right': pygame.K_RIGHT,
+                'shoot': [pygame.K_k]
+            }
+        }
+        
         if not selected_slots:
-            # Default: single player
-            self.players.append(Player(Vector2(0, 0), 1))
+            player = Player(Vector2(0, 0), 1)
+            player.controls = PLAYER_CONTROLS.get(1, {})
+            self.players.append(player)
             return
         
-        # ✅ Multiplayer rejimi: 2 yoki undan ko'p player bo'lsa
         player_count = sum(1 for s in selected_slots if s.get('type') == 'player')
         is_multiplayer = player_count >= 2
         
+        player_index = 0
         for slot in selected_slots:
             slot_type = slot.get('type', 'player')
             slot_id = slot.get('id', 1)
@@ -92,8 +110,9 @@ class GameEngine:
             color = tuple(slot.get('color', [40, 120, 255]))
             
             if slot_type == 'player':
+                player_index += 1
                 player = Player(Vector2(pos_x, pos_y), slot_id, color=color)
-                # ✅ Multiplayer flaglarini o'rnatish
+                player.controls = PLAYER_CONTROLS.get(player_index, PLAYER_CONTROLS.get(1, {}))
                 player.multi_player_mode = is_multiplayer
                 player.can_go_down = is_multiplayer
                 self.players.append(player)

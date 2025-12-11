@@ -5,6 +5,7 @@ import time
 import pygame
 
 from .helper_bot import safe_get, safe_int, safe_bool, safe_enum, HelperBot
+from .bot_ai import BotState
 from core import Vector2, WeaponType, PlayerState, GameMode
 from .player import Player, Drone
 from .world import World, PowerUp, WorldObject
@@ -57,7 +58,8 @@ def create_tables(conn):
             last_fire_time INTEGER, last_damage_time INTEGER,
             drone_json TEXT,
             type TEXT,
-            color TEXT
+            color TEXT,
+            bot_ai_json TEXT
         )
     ''')
     c.execute('''
@@ -129,10 +131,28 @@ def save_game(game, save_name, game_mode, modul_name="default"):
             })
         player_type = "bot" if isinstance(player, HelperBot) else "player"
         player_color = list(getattr(player, "color", (200, 200, 200)))
+        
+        bot_ai_json = None
+        if isinstance(player, HelperBot) and hasattr(player, 'ai') and player.ai:
+            bot_ai_json = json.dumps({
+                "state": player.ai.state.value,
+                "previous_state": player.ai.previous_state.value,
+                "state_timer": player.ai.state_timer,
+                "follow_distance": player.ai.follow_distance,
+                "attack_range": player.ai.attack_range,
+                "escape_range": player.ai.escape_range,
+                "protect_range": player.ai.protect_range,
+                "revive_range": player.ai.revive_range,
+                "aggression": player.ai.aggression,
+                "caution": player.ai.caution,
+                "loyalty": player.ai.loyalty,
+                "base_speed": getattr(player, 'base_speed', 130)
+            })
+        
         c.execute('''
             INSERT INTO player VALUES (
                 ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                ?
+                ?,?
             )
         ''', (
             idx,
@@ -148,7 +168,8 @@ def save_game(game, save_name, game_mode, modul_name="default"):
             player.last_fire_time, player.last_damage_time,
             drone_json,
             player_type,
-            json.dumps(player_color)
+            json.dumps(player_color),
+            bot_ai_json
         ))
 
     # Zombielar
@@ -293,14 +314,25 @@ def load_game_data(save_name, progress_callback=None, modul_name="default"):
     player_rows = c.execute('SELECT * FROM player ORDER BY id ASC').fetchall()
     print("[DEBUG] player rows:", player_rows)
     for row in player_rows:
-        (
-            pid, px, py, health, max_health, shield, max_shield, level, zombie_kills,
-            weapon_type, ammo, state, down_time, down_timer_duration,
-            protection_circle_active, protection_circle_radius, protection_timer, protection_duration,
-            revive_progress, revive_duration, being_revived,
-            invulnerability_time, invulnerability_duration, last_fire_time, last_damage_time,
-            drone_json, player_type, color_json
-        ) = row
+        if len(row) >= 29:
+            (
+                pid, px, py, health, max_health, shield, max_shield, level, zombie_kills,
+                weapon_type, ammo, state, down_time, down_timer_duration,
+                protection_circle_active, protection_circle_radius, protection_timer, protection_duration,
+                revive_progress, revive_duration, being_revived,
+                invulnerability_time, invulnerability_duration, last_fire_time, last_damage_time,
+                drone_json, player_type, color_json, bot_ai_json
+            ) = row
+        else:
+            (
+                pid, px, py, health, max_health, shield, max_shield, level, zombie_kills,
+                weapon_type, ammo, state, down_time, down_timer_duration,
+                protection_circle_active, protection_circle_radius, protection_timer, protection_duration,
+                revive_progress, revive_duration, being_revived,
+                invulnerability_time, invulnerability_duration, last_fire_time, last_damage_time,
+                drone_json, player_type, color_json
+            ) = row
+            bot_ai_json = None
         pdata = {
             "id": pid,
             "position": [px, py],
@@ -328,7 +360,8 @@ def load_game_data(save_name, progress_callback=None, modul_name="default"):
             "last_damage_time": last_damage_time,
             "drone": json.loads(drone_json) if drone_json else None,
             "type": player_type,
-            "color": json.loads(color_json) if color_json else [200, 200, 200]
+            "color": json.loads(color_json) if color_json else [200, 200, 200],
+            "bot_ai": json.loads(bot_ai_json) if bot_ai_json else None
         }
         player_data.append(pdata)
     data["player"] = player_data
@@ -446,6 +479,28 @@ def load_from_data(game, data):
             drone.last_rocket_time = safe_int(safe_get(drone_data, "last_rocket_time", 0))
             drone.size = safe_int(safe_get(drone_data, "size", 16))
             player.drone = drone
+        
+    # --- Bot AI ---
+        if player_type == "bot" and hasattr(player, 'ai') and player.ai:
+            bot_ai_data = safe_get(pdata, "bot_ai", None)
+            if bot_ai_data:
+                try:
+                    player.ai.state = BotState(safe_get(bot_ai_data, "state", "idle"))
+                    player.ai.previous_state = BotState(safe_get(bot_ai_data, "previous_state", "idle"))
+                except ValueError:
+                    player.ai.state = BotState.IDLE
+                    player.ai.previous_state = BotState.IDLE
+                player.ai.state_timer = float(safe_get(bot_ai_data, "state_timer", 0))
+                player.ai.follow_distance = float(safe_get(bot_ai_data, "follow_distance", 120))
+                player.ai.attack_range = float(safe_get(bot_ai_data, "attack_range", 280))
+                player.ai.escape_range = float(safe_get(bot_ai_data, "escape_range", 80))
+                player.ai.protect_range = float(safe_get(bot_ai_data, "protect_range", 200))
+                player.ai.revive_range = float(safe_get(bot_ai_data, "revive_range", 60))
+                player.ai.aggression = float(safe_get(bot_ai_data, "aggression", 0.6))
+                player.ai.caution = float(safe_get(bot_ai_data, "caution", 0.4))
+                player.ai.loyalty = float(safe_get(bot_ai_data, "loyalty", 0.8))
+                player.base_speed = float(safe_get(bot_ai_data, "base_speed", 130))
+        
         game.players.append(player)
     
     if len(game.players) > 1:

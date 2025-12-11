@@ -1,10 +1,10 @@
 import random
 import math
-import numpy as np
 
 from core import Vector2, WeaponType, PlayerState, GameMode
 from .zombie import ZombieType
 from .player import Player
+from .bot_ai import BotAI, BotState
 
 
 def safe_get(obj, key, default):
@@ -37,197 +37,92 @@ def safe_enum(enum_cls, value, default):
     except Exception:
         return default
 
+
 class HelperBot(Player):
     def __init__(self, start_position: Vector2, bot_id: int, color):
         super().__init__(start_position, bot_id, color)
         self.is_bot = True
-        self.reviving_target = None  
+        self.reviving_target = None
+        self.ai = BotAI(self)
+        self.base_speed = 130
 
     def update(self, dt, power_ups, zombies, other_players):
         bullets = []
-        if hasattr(self, "is_leader") and not self.is_leader and hasattr(self, "leader_id"):
-            leader = next((p for p in other_players if getattr(p, "id", None) == self.leader_id), None)
-            if leader:
-                leader_radius = 150
-                distance = (leader.position - self.position).length()
-                if not math.isnan(distance) and distance > leader_radius:
-                    direction = (leader.position - self.position)
-                    if direction.length() > 0:
-                        direction = direction.normalize()
-                        self.position += direction * self.get_speed() * dt
-                    return bullets
-                return bullets
-
-        if self.state != PlayerState.ALIVE:
+        
+        if self.state == PlayerState.DEAD:
             return bullets
-
-        if self.reviving_target is not None:
+        
+        if self.state == PlayerState.DOWNED:
             bullets += super().update(dt, power_ups, zombies, other_players)
             return bullets
-
-        if len(zombies) >= 2:
-            angles = []
-            positions = []
-            for z in zombies:
-                vec = z.position - self.position
-                if vec.length() > 0:
-                    angle = math.atan2(vec.y, vec.x)
-                    angles.append(angle)
-                    positions.append(z.position)
-            sorted_zombies = sorted(zip(angles, positions), key=lambda x: x[0])
-            max_gap = 0
-            escape_angle = None
-            for i in range(len(sorted_zombies)):
-                a1 = sorted_zombies[i][0]
-                a2 = sorted_zombies[(i + 1) % len(sorted_zombies)][0]
-                gap = (a2 - a1) % (2 * math.pi)
-                if gap > max_gap:
-                    max_gap = gap
-                    escape_angle = (a1 + gap / 2) % (2 * math.pi)
-            if escape_angle is not None:
-                escape_dir = Vector2(math.cos(escape_angle), math.sin(escape_angle))
-                nearest_player = None
-                min_player_dist = float('inf')
-                for p in other_players:
-                    if p.state == PlayerState.ALIVE:
-                        dist = (p.position - self.position).length()
-                        if dist < min_player_dist:
-                            min_player_dist = dist
-                            nearest_player = p
-                if nearest_player:
-                    player_dir = (nearest_player.position - self.position)
-                    if player_dir.length() > 0:
-                        player_dir = player_dir.normalize()
-                        dot = escape_dir.x * player_dir.x + escape_dir.y * player_dir.y
-                        angle_between = math.acos(np.clip(dot, -1, 1)) * 180 / math.pi
-                        if angle_between < 60:
-                            escape_dir = player_dir
-                speed = self.get_speed()
-                self.position += escape_dir * speed * dt
-                self.shooting = False
-                self.target_zombie = None
-                bullets += super().update(dt, power_ups, zombies, other_players)
-                return bullets
-
-        need_hp = self.health < self.max_health * 0.7
-        need_shield = self.shield < self.max_shield * 0.7 if hasattr(self, "max_shield") else False
-        target_powerup = None
-        min_pu_dist = float('inf')
-        if need_hp or need_shield:
-            for pu in power_ups:
-                if not pu.active:
-                    continue
-                if need_hp and (pu.type == "hp" or pu.type == "health" or pu.type == "unknown"):
-                    dist = (pu.position - self.position).length()
-                    if dist < min_pu_dist:
-                        min_pu_dist = dist
-                        target_powerup = pu
-                elif need_shield and (pu.type == "shield"):
-                    dist = (pu.position - self.position).length()
-                    if dist < min_pu_dist:
-                        min_pu_dist = dist
-                        target_powerup = pu
-
-        if target_powerup:
-            direction = (target_powerup.position - self.position)
-            dist_to_pu = direction.length()
-            direction = direction.normalize() if dist_to_pu > 0 else Vector2(0, 0)
-            blocked = False
-            for z in zombies:
-                to_zombie = (z.position - self.position)
-                if to_zombie.length() > 0:
-                    proj = direction.x * to_zombie.x + direction.y * to_zombie.y
-                    proj /= to_zombie.length()
-                else:
-                    proj = 0
-                if proj > 0.8 and 0 < to_zombie.length() < dist_to_pu and (z.position - (self.position + direction * to_zombie.length())).length() < 40:
-                    blocked = True
-                    break
-            if not blocked:
-                speed = self.get_speed()
-                self.position += direction * speed * dt
-            else:
-                nearest_zombie = min(zombies, key=lambda z: (z.position - self.position).length())
-                away = (self.position - nearest_zombie.position)
-                if away.length() > 0:
-                    away = away.normalize()
-                perp = Vector2(-direction.y, direction.x)
-                if random.random() < 0.5:
-                    perp = -perp
-                move_dir = (away + perp * 0.7)
-                if move_dir.length() > 0:
-                    move_dir = move_dir.normalize()
-                    self.position += move_dir * self.get_speed() * dt
-            self.shooting = False
-            self.target_zombie = None
-            bullets += super().update(dt, power_ups, zombies, other_players)
-            return bullets
-
-        nearest_zombie = None
-        min_dist = float('inf')
-        for z in zombies:
-            dist = (z.position - self.position).length()
-            if dist < min_dist:
-                min_dist = dist
-                nearest_zombie = z
-
-        shoot_radius = 300
-        escape_radius = shoot_radius / 2
-
-        if nearest_zombie and min_dist < escape_radius:
-            direction = (self.position - nearest_zombie.position)
-            if direction.length() > 0:
-                direction = direction.normalize()
-                speed = self.get_speed()
-                self.position += direction * speed * dt
-            self.shooting = False
-            self.target_zombie = None
-
-        elif nearest_zombie and min_dist < shoot_radius:
-            self.shooting = True
-            self.target_zombie = nearest_zombie
-
+        
+        ai_result = self.ai.update(dt, zombies, other_players, power_ups)
+        
+        move_dir = ai_result.get('move_direction', Vector2(0, 0))
+        if move_dir.length() > 0:
+            speed = self.get_speed()
+            self.position.x += move_dir.x * speed * dt
+            self.position.y += move_dir.y * speed * dt
+        
+        self.shooting = ai_result.get('shooting', False)
+        self.target_zombie = ai_result.get('target_zombie', None)
+        
+        if ai_result.get('reviving', False) and self.reviving_target:
+            self._do_revive(dt)
         else:
-            self.shooting = False
-            self.target_zombie = None
-
-        if other_players:
-            main_player = other_players[0]
-            dist_to_main = (self.position - main_player.position).length()
-            if dist_to_main > 200:
-                direction = (main_player.position - self.position)
-                if direction.length() > 0:
-                    direction = direction.normalize()
-                    speed = self.get_speed()
-                    self.position += direction * speed * dt
-
-        # --- Push-back ---
-        for p in other_players:
-            if getattr(p, "state", None) == PlayerState.ALIVE and p is not self:
-                dist = (self.position - p.position).length()
-                if dist < 40:
-                    push_dir = (self.position - p.position)
-                    if push_dir.length() > 0:
-                        push_dir = push_dir.normalize()
-                        push_strength = (40 - dist) / 40
-                        self.position += push_dir * push_strength * self.get_speed() * dt
-
-        if (
-            math.isnan(self.position.x) or math.isnan(self.position.y) or
-            math.isinf(self.position.x) or math.isinf(self.position.y)
-        ):
-            print(f"[ERROR] {self.__class__.__name__} {getattr(self, 'id', '')} pozitsiyasi noto'g'ri: {self.position}")
-
+            self.reviving_target = self.ai.target_player if self.ai.state == BotState.REVIVE_PLAYER else None
+        
+        self._apply_push_back(other_players, dt)
+        
+        self._validate_position()
+        
         bullets += super().update(dt, power_ups, zombies, other_players)
         return bullets
 
     def get_speed(self):
-        return 120
+        if self.ai.state == BotState.ESCAPE:
+            return self.base_speed * 1.3
+        elif self.ai.state == BotState.PROTECT_PLAYER:
+            return self.base_speed * 1.1
+        elif self.ai.state == BotState.REVIVE_PLAYER:
+            return self.base_speed * 1.2
+        return self.base_speed
 
-    def try_revive(self, player, dt):
-        if player.state == PlayerState.DOWNED:
-            player.revive_progress += dt * 1000
-            if player.revive_progress >= player.revive_duration:
-                player.state = PlayerState.ALIVE
-                player.health = player.max_health // 2
-                player.revive_progress = 0
+    def _do_revive(self, dt):
+        if not self.reviving_target:
+            return
+        if self.reviving_target.state != PlayerState.DOWNED:
+            self.reviving_target = None
+            return
+        
+        dist = (self.reviving_target.position - self.position).length()
+        if dist < 60:
+            self.reviving_target.being_revived = True
+            self.reviving_target.reviver_player = self
+            self.reviving_target.revive_progress += dt * 1000
+            
+            if self.reviving_target.revive_progress >= self.reviving_target.revive_duration:
+                self.reviving_target.revive()
+                self.reviving_target = None
+
+    def _apply_push_back(self, other_players, dt):
+        for p in other_players:
+            if getattr(p, "state", None) == PlayerState.ALIVE and p is not self:
+                dist = (self.position - p.position).length()
+                if dist < 40 and dist > 0:
+                    push_dir = self.position - p.position
+                    push_dir = push_dir.normalize()
+                    push_strength = (40 - dist) / 40
+                    self.position.x += push_dir.x * push_strength * self.get_speed() * dt * 0.5
+                    self.position.y += push_dir.y * push_strength * self.get_speed() * dt * 0.5
+
+    def _validate_position(self):
+        if (
+            math.isnan(self.position.x) or math.isnan(self.position.y) or
+            math.isinf(self.position.x) or math.isinf(self.position.y)
+        ):
+            print(f"[ERROR] HelperBot {self.id} pozitsiyasi noto'g'ri: {self.position}")
+            self.position = Vector2(0, 0)
+
+    def get_ai_state(self) -> str:
+        return self.ai.state.value if self.ai else "unknown"
