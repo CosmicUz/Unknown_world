@@ -101,6 +101,7 @@ def create_tables(conn):
 
 
 def save_game(game, save_name, game_mode, modul_name="default"):
+    print(f"[save_game][default] Saving '{save_name}' for module '{modul_name}' (players: {len(getattr(game, 'players', []))})")
     db_path = get_save_path(save_name, modul_name)
     if os.path.exists(db_path):
         conn = sqlite3.connect(db_path)
@@ -506,6 +507,41 @@ def load_from_data(game, data):
     if len(game.players) > 1:
         game.players.sort(key=lambda p: p.id)
 
+    # Assign controls and multiplayer flags (so loaded players can receive input)
+    try:
+        PLAYER_CONTROLS = {
+            1: {
+                'up': __import__('pygame').K_w,
+                'down': __import__('pygame').K_s,
+                'left': __import__('pygame').K_a,
+                'right': __import__('pygame').K_d,
+                'shoot': [__import__('pygame').K_SPACE, __import__('pygame').K_f]
+            },
+            2: {
+                'up': __import__('pygame').K_UP,
+                'down': __import__('pygame').K_DOWN,
+                'left': __import__('pygame').K_LEFT,
+                'right': __import__('pygame').K_RIGHT,
+                'shoot': [__import__('pygame').K_k]
+            }
+        }
+        player_count = sum(1 for p in game.players if not isinstance(p, HelperBot))
+        is_multiplayer = player_count >= 2
+        print(f"[load_from_data][default] players loaded: {len(game.players)}, multiplayer={is_multiplayer}")
+        idx = 1
+        for p in game.players:
+            if isinstance(p, HelperBot):
+                p.multi_player_mode = is_multiplayer
+                p.can_go_down = is_multiplayer
+            else:
+                p.controls = PLAYER_CONTROLS.get(idx, PLAYER_CONTROLS.get(1, {}))
+                p.multi_player_mode = is_multiplayer
+                p.can_go_down = is_multiplayer
+                print(f"[load_from_data][default] Assigned controls to player id={p.id}, controls={p.controls}")
+                idx += 1
+    except Exception as e:
+        print(f"[load_from_data][default] Failed to assign controls: {e}")
+
     # --- Zombielar ---
     game.zombies.clear()
     zombies_data = data.get("zombies", [])
@@ -567,6 +603,12 @@ def load_from_data(game, data):
     game.last_zombie_spawn = pygame.time.get_ticks()
     game.next_power_up_time = pygame.time.get_ticks() + 5000
     game.game_start_time = pygame.time.get_ticks()
+
+    # Ensure engine state is PLAYING
+    try:
+        game.state = "PLAYING"
+    except Exception as e:
+        print(f"[ERROR] Failed to set game state: {e}")
 
     print("Players loaded:", len(game.players))
     print("Zombies loaded:", len(game.zombies))

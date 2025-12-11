@@ -1,11 +1,11 @@
 import sys
 import os
 import random
-import re
+import traceback
 import pygame
 from loading import LoadingScreen
 from core import WHITE, BLACK, FPS
-from Moduls.default.save_load import save_game, delete_save, list_saved_games, load_game_data, load_from_data, save_last_session, AUTOSAVE_PATH
+from Moduls.default.save_load import save_game, delete_save, list_saved_games, load_game_data, load_from_data, save_last_session, AUTOSAVE_PATH, SAVE_ROOT
 from network import HostServer, Client, get_local_ip
 from session import Session
 import importlib
@@ -17,20 +17,42 @@ MODULS_PATH = os.path.join(os.path.dirname(__file__), 'Moduls')
 def get_modul_dirs(require_modul_network=False):
     """Return a list of available module directory names."""
     mods = []
-    for d in os.listdir(MODULS_PATH):
-        full_dir = os.path.join(MODULS_PATH, d)
-        if os.path.isdir(full_dir):
-            has_logic = os.path.exists(os.path.join(full_dir, 'game_logic.py'))
-            has_net = os.path.exists(os.path.join(full_dir, 'modul_network.py'))
-            if has_logic and (not require_modul_network or has_net):
-                mods.append(d)
+    try:
+        for d in os.listdir(MODULS_PATH):
+            full_dir = os.path.join(MODULS_PATH, d)
+            if os.path.isdir(full_dir):
+                has_logic = os.path.exists(os.path.join(full_dir, 'game_logic.py'))
+                has_net = os.path.exists(os.path.join(full_dir, 'modul_network.py'))
+                if has_logic and (not require_modul_network or has_net):
+                    mods.append(d)
+    except Exception as e:
+        print(f"[get_modul_dirs] Failed to list modules: {e}")
+    # deterministic order
+    mods = sorted(set(mods))
     return mods
+
+
+def get_save_modul_dirs():
+    """Return list of module folder names that exist in the user's saves directory.
+    This is used by the Load menu so the dropdown shows only modules that have saved games.
+    """
+    try:
+        if not os.path.exists(SAVE_ROOT):
+            return []
+        entries = [d for d in os.listdir(SAVE_ROOT) if os.path.isdir(os.path.join(SAVE_ROOT, d))]
+        return sorted(set(entries))
+    except Exception as e:
+        print(f"[get_save_modul_dirs] Failed to list save modules: {e}")
+        return []
 
 
 class Menu:
     def __init__(self, screen=None, screen_width=1200, screen_height=800):
         self.screen_width = screen_width
         self.screen_height = screen_height
+        # Keep track of windowed size for fullscreen toggle
+        self._windowed_size = (screen_width, screen_height)
+        self.fullscreen = False
         if screen is not None:
             self.screen = screen
         else:
@@ -113,7 +135,11 @@ class Menu:
                 self.mouse_pos = event.pos
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_F11:
-                    pygame.display.toggle_fullscreen()
+                            # Toggle fullscreen and update Menu's surface and sizes
+                            try:
+                                self.toggle_fullscreen()
+                            except Exception as e:
+                                print(f"[MENU] fullscreen toggle failed: {e}")
                 if event.key == pygame.K_ESCAPE:
                     if self.state == "PLAYING":
                         self.state = "MAIN_MENU"
@@ -140,6 +166,7 @@ class Menu:
 
     def handle_mouse_click(self, pos):
         mx, my = pos
+        print(f"[MOUSE] Click at: {pos}, state: {self.state}")
         if self.state == "MAIN_MENU":
             self.handle_main_menu_click(pos)
         elif self.state == "PLAY_MENU":
@@ -161,17 +188,23 @@ class Menu:
         self.loading_active = True
         self.loading_selected_slots = list(selected_slots)
         self.loading_selected_modul = selected_modul
+        print(f"[MENU] start_loading called -> selected_modul={selected_modul}, loading_selected_modul={getattr(self, 'loading_selected_modul', None)}, selected_slots={selected_slots}")
+        # Ensure we do not accidentally load a previously-selected save when starting a new game
+        # (selected_save is set when user browses Load menu). Clear it for fresh Start.
+        self.selected_save = None
         # Loading qilish
         self._do_loading()
 
     def _do_loading(self):
         try:
+            print(f"[MENU] _do_loading start -> selected_save={getattr(self, 'selected_save', None)}, loading_selected_modul={getattr(self, 'loading_selected_modul', None)}")
             if getattr(self, 'selected_save', None):
                 load_selected_modul = getattr(self, 'load_selected_modul', 'default')
                 self._do_loading_from_save(self.selected_save, modul_name=load_selected_modul)
             else:
                 # Game engine setup
                 modul_name = self.loading_selected_modul if self.loading_selected_modul else "default"
+                print(f"[MENU] _do_loading will use modul_name={modul_name}")
                 try:
                     modul_loading_path = f"Moduls.{modul_name}.modul_loading"
                     modul_loading = importlib.import_module(modul_loading_path)
@@ -189,7 +222,6 @@ class Menu:
                     self.state = "PLAYING"
         except Exception as e:
             print(f"[MENU] Loading failed: {e}")
-            import traceback
             traceback.print_exc()
         finally:
             self.loading_active = False
@@ -197,16 +229,72 @@ class Menu:
     def _do_loading_from_save(self, save_name, modul_name="default"):
         """Load saved DB and start a GameEngine with the loaded data."""
         try:
-            data = load_game_data(save_name, modul_name=modul_name)
+            print(f"[MENU] Loading save '{save_name}' from module '{modul_name}'")
+            # Import module-specific save_load and game_logic so ProtectBase/default behave correctly
+            try:
+                save_load_mod = importlib.import_module(f"Moduls.{modul_name}.save_load")
+            except Exception as e:
+                print(f"[MENU] Failed to import save_load for {modul_name}: {e}")
+                save_load_mod = importlib.import_module("Moduls.default.save_load")
+
+            try:
+                data = save_load_mod.load_game_data(save_name, modul_name=modul_name)
+            except Exception as e:
+                print(f"[MENU] load_game_data error for {modul_name}: {e}")
+                return
+
             if data is None:
                 print(f"[MENU] Save '{save_name}' not found or corrupted")
                 return
-            engine = game_logic.GameEngine(self.screen, self.screen_width, self.screen_height)
-            load_from_data(engine, data)
+
+            try:
+                game_logic_mod = importlib.import_module(f"Moduls.{modul_name}.game_logic")
+            except Exception as e:
+                print(f"[MENU] Failed to import game_logic for {modul_name}: {e}")
+                game_logic_mod = importlib.import_module("Moduls.default.game_logic")
+
+            # Create engine from module's game_logic
+            engine = game_logic_mod.GameEngine(self.screen, self.screen_width, self.screen_height)
+
+            # Use module-specific load_from_data if available
+            if hasattr(save_load_mod, 'load_from_data'):
+                try:
+                    save_load_mod.load_from_data(engine, data)
+                except Exception as e:
+                    print(f"[MENU] load_from_data error for {modul_name}: {e}")
+                    return
+            else:
+                # fallback to default loader if missing
+                from Moduls.default.save_load import load_from_data as default_load_from_data
+                default_load_from_data(engine, data)
+
+            print(f"[MENU] Loaded engine: players={len(getattr(engine, 'players', []))}, zombies={len(getattr(engine, 'zombies', []))}")
             self.game_engine = engine
             self.state = "PLAYING"
         except Exception as e:
             print(f"[MENU] _do_loading_from_save failed: {e}")
+
+    def toggle_fullscreen(self):
+        """Toggle fullscreen and update internal surface/size references."""
+        # If currently windowed -> switch to fullscreen using current display resolution
+        if not self.fullscreen:
+            # store current windowed size
+            try:
+                self._windowed_size = (self.screen_width, self.screen_height)
+            except Exception:
+                self._windowed_size = (self.screen_width, self.screen_height)
+            screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            self.fullscreen = True
+        else:
+            # restore windowed size
+            w, h = self._windowed_size
+            screen = pygame.display.set_mode((w, h))
+            self.fullscreen = False
+        # update stored surface and sizes
+        self.screen = screen
+        self.screen_width = screen.get_width()
+        self.screen_height = screen.get_height()
+        print(f"[MENU] fullscreen={self.fullscreen}, size=({self.screen_width},{self.screen_height})")
 
     # ==================== MAIN MENU ====================
     def render_main_menu(self):
@@ -269,7 +357,24 @@ class Menu:
         dropdown_height = 40
         dropdown_x = center_x - dropdown_width // 2
         
-        available_moduls = get_modul_dirs()
+        # Show modules that actually have saves in the user's Documents saves folder
+        available_moduls = get_save_modul_dirs()
+        # fallback: also include installed modules if no saves found
+        if not available_moduls:
+            available_moduls = get_modul_dirs()
+        # Ensure default is always present
+        if 'default' not in available_moduls:
+            available_moduls.insert(0, 'default')
+        # Debug print to help diagnose selection issues
+        print(f"[LOAD_MENU] Available modules: {available_moduls}, current selection: {getattr(self, 'load_selected_modul', 'default')}")
+        # Debug: show available modules in console to help diagnose selection issues
+        if not available_moduls:
+            print("[LOAD_MENU] No modules found in Moduls/ folder")
+        else:
+            print(f"[LOAD_MENU] Available modules: {available_moduls}, current selection: {getattr(self, 'load_selected_modul', 'default')}")
+        # Ensure default is always present for safety
+        if 'default' not in available_moduls:
+            available_moduls.insert(0, 'default')
         dropdown_rect = pygame.Rect(dropdown_x, dropdown_y, dropdown_width, dropdown_height)
         pygame.draw.rect(self.screen, (100, 100, 100), dropdown_rect, border_radius=8)
         
@@ -398,7 +503,7 @@ class Menu:
 
     def render_add_menu(self):
         """✅ Add menu - O'yinchi yoki Bot tanlash"""
-        menu_width = int(self.screen_width * 0.8)
+        menu_width = int(self.screen_width * 0.4)
         menu_height = 140
         menu_x = self.screen_width // 2 - menu_width // 2
         menu_y = self.screen_height // 2 - menu_height // 2
@@ -431,8 +536,6 @@ class Menu:
             {'type': 'bot', 'id': 101, 'name': 'Bot 1', 'color': [200, 120, 50]},
             {'type': 'bot', 'id': 102, 'name': 'Bot 2', 'color': [200, 120, 50]},
             {'type': 'bot', 'id': 103, 'name': 'Bot 3', 'color': [200, 120, 50]},
-            {'type': 'bot', 'id': 104, 'name': 'Bot 4', 'color': [200, 120, 50]},
-            {'type': 'bot', 'id': 105, 'name': 'Bot 5', 'color': [200, 120, 50]},
         ]
         
         for i, obj in enumerate(options):
@@ -478,6 +581,7 @@ class Menu:
         # ✅ Modul dropdown
         if hasattr(self, 'modul_dropdown_rect') and self.modul_dropdown_rect.collidepoint(mx, my):
             self.modul_dropdown_open = not self.modul_dropdown_open
+            print(f"[PLAY_MENU] modul_dropdown_open -> {self.modul_dropdown_open}")
             return
         
         # Dropdown elem tanlandi
@@ -486,6 +590,7 @@ class Menu:
                 if mod_rect.collidepoint(mx, my):
                     self.selected_modul = modul_name
                     self.modul_dropdown_open = False
+                    print(f"[PLAY_MENU] module selected: {modul_name}")
                     return
         
         # Dropdown yopamiz agar boshqa joyni bosgansa
@@ -546,6 +651,8 @@ class Menu:
                 self.ensure_player1_exists()
                 self.start_loading(self.selected_slots, self.selected_modul)
             elif self.play_bottom_buttons["load"].collidepoint(mx, my):
+                # Pass current Play-selected module into Load menu
+                self.load_selected_modul = getattr(self, 'selected_modul', 'default')
                 self.state = "LOAD_MENU"
             elif self.play_bottom_buttons["back"].collidepoint(mx, my):
                 self.state = "MAIN_MENU"
@@ -554,39 +661,17 @@ class Menu:
     def render_load_menu(self):
         self.screen.fill((40, 40, 60))
         center_x = self.screen_width // 2
-
-        # Modul tanlash dropdown
+        # Show which module will be used for saves (selected in Play menu)
         dropdown_y = 20
         dropdown_width = 200
         dropdown_height = 40
         dropdown_x = center_x - dropdown_width // 2
-        
-        available_moduls = get_modul_dirs()
         dropdown_rect = pygame.Rect(dropdown_x, dropdown_y, dropdown_width, dropdown_height)
         pygame.draw.rect(self.screen, (100, 100, 100), dropdown_rect, border_radius=8)
-        
-        # Tanlangan modul ko'rsatish
-        modul_text = self.small_font.render(f"Module: {getattr(self, 'load_selected_modul', 'default')}", True, WHITE)
+        # Use the module chosen in Play menu (fallback to 'default')
+        load_selected_modul = getattr(self, 'load_selected_modul', getattr(self, 'selected_modul', 'default'))
+        modul_text = self.small_font.render(f"Module: {load_selected_modul}", True, WHITE)
         self.screen.blit(modul_text, (dropdown_x + 10, dropdown_y + 8))
-        
-        # Dropdown asl dropdown o'rniga style menu
-        if not hasattr(self, 'load_modul_dropdown_open'):
-            self.load_modul_dropdown_open = False
-            self.load_modul_dropdown_rect = dropdown_rect
-        
-        # Dropdown ochilgan bo'lsa variantlarni ko'rsatish
-        if self.load_modul_dropdown_open:
-            modul_rects = []
-            for idx, mod in enumerate(available_moduls):
-                mod_y = dropdown_y + dropdown_height + 10 + idx * 30
-                mod_rect = pygame.Rect(dropdown_x, mod_y, dropdown_width, 28)
-                current_modul = getattr(self, 'load_selected_modul', 'default')
-                color = (60, 150, 230) if mod == current_modul else (80, 80, 80)
-                pygame.draw.rect(self.screen, color, mod_rect, border_radius=4)
-                mod_name_text = self.small_font.render(mod, True, WHITE)
-                self.screen.blit(mod_name_text, (dropdown_x + 10, mod_y + 5))
-                modul_rects.append((mod, mod_rect))
-            self.load_modul_dropdown_rects = modul_rects
 
         # Input box
         input_y = 80
@@ -618,7 +703,7 @@ class Menu:
         self.screen.blit(self.small_font.render("Back", True, WHITE), back_btn_rect.move(30, 8))
 
         # Save list - tanlangan modul uchun savlarni ko'rsatish
-        load_selected_modul = getattr(self, 'load_selected_modul', 'default')
+        load_selected_modul = getattr(self, 'load_selected_modul', getattr(self, 'selected_modul', 'default'))
         search = getattr(self, "load_input_text", "").lower()
         all_saves = list_saved_games(modul_name=load_selected_modul)
         filtered_saves = [s for s in all_saves if search in s.lower()] if search else all_saves
@@ -670,35 +755,20 @@ class Menu:
 
     def handle_load_menu_click(self, pos):
         mx, my = pos
-        
-        # ✅ Modul dropdown
-        if hasattr(self, 'load_modul_dropdown_rect') and self.load_modul_dropdown_rect.collidepoint(mx, my):
-            self.load_modul_dropdown_open = not self.load_modul_dropdown_open
-            return
-        
-        # Dropdown elem tanlandi
-        if self.load_modul_dropdown_open and hasattr(self, 'load_modul_dropdown_rects'):
-            for modul_name, mod_rect in self.load_modul_dropdown_rects:
-                if mod_rect.collidepoint(mx, my):
-                    self.load_selected_modul = modul_name
-                    self.load_modul_dropdown_open = False
-                    self.selected_save = None  # Yangi modul tanlanganda selected_save reset qilish
-                    return
-        
-        # Dropdown yopamiz agar boshqa joyni bosgansa
-        self.load_modul_dropdown_open = False
+        # Note: Module for Load menu is chosen from Play menu. No dropdown here.
         
         # Button clicks
         if hasattr(self, 'load_menu_btns'):
             if self.load_menu_btns["delete"].collidepoint(pos):
                 if hasattr(self, 'selected_save') and self.selected_save:
-                    load_selected_modul = getattr(self, 'load_selected_modul', 'default')
+                    load_selected_modul = getattr(self, 'load_selected_modul', getattr(self, 'selected_modul', 'default'))
                     delete_save(self.selected_save, modul_name=load_selected_modul)
                     self.selected_save = None
             elif self.load_menu_btns["load"].collidepoint(pos):
                 if hasattr(self, 'selected_save') and self.selected_save:
-                    load_selected_modul = getattr(self, 'load_selected_modul', 'default')
-                    self.start_loading(self.selected_slots, "load_save")
+                    load_selected_modul = getattr(self, 'load_selected_modul', getattr(self, 'selected_modul', 'default'))
+                    # Load the selected save file using the selected module
+                    self._do_loading_from_save(self.selected_save, modul_name=load_selected_modul)
             elif self.load_menu_btns["back"].collidepoint(pos):
                 self.state = "PLAY_MENU"
         
@@ -754,18 +824,28 @@ class Menu:
         center_x = self.screen_width // 2
         text = self.font.render("Multiplayer Create (Coming Soon)", True, WHITE)
         self.screen.blit(text, (center_x - text.get_width() // 2, 200))
-
+        pygame.draw.rect(self.screen, (200, 100, 100), (center_x - 70, 400, 140, 50), border_radius=10)
+        back_text = self.small_font.render("Back", True, WHITE) 
+        self.screen.blit(back_text, back_text.get_rect(center=(center_x, 425)))
     def handle_create_multiplayer_menu_click(self, pos):
-        pass
+        mx, my = pos
+        back_rect = pygame.Rect(self.screen_width // 2 - 70, 400, 140, 50)
+        if back_rect.collidepoint(mx, my):
+            self.state = 'MULTIPLAYER_MENU'
 
     def render_join_multiplayer_menu(self):
         self.screen.fill((50, 120, 190))
         center_x = self.screen_width // 2
         text = self.font.render("Multiplayer Join (Coming Soon)", True, WHITE)
         self.screen.blit(text, (center_x - text.get_width() // 2, 200))
-
+        pygame.draw.rect(self.screen, (200, 100, 100), (center_x - 70, 400, 140, 50), border_radius=10)
+        back_text = self.small_font.render("Back", True, WHITE) 
+        self.screen.blit(back_text, back_text.get_rect(center=(center_x, 425)))
     def handle_join_input_mouse_click(self, pos):
-        pass
+        mx, my = pos
+        back_rect = pygame.Rect(self.screen_width // 2 - 70, 400, 140, 50)
+        if back_rect.collidepoint(mx, my):
+            self.state = 'MULTIPLAYER_MENU'
 
     def render_client_menu(self):
         self.screen.fill((50, 120, 190))
